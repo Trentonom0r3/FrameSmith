@@ -40,6 +40,25 @@ stream(c10::cuda::getStreamFromPool(false, device.index()))
     std::cout << "RIFE with TensorRT initialized" << std::endl;
 }
 
+void RifeTensorRT::cacheFrame() {
+    I0.copy_(I1, true);
+}
+
+void RifeTensorRT::cacheFrameReset(const at::Tensor& frame) {
+    I0.copy_(processFrame(frame), true);
+    useI0AsSource = true;
+}
+
+
+
+nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
+    nvinfer1::Dims dims;
+    dims.nbDims = sizes.size();
+    for (int i = 0; i < dims.nbDims; ++i) {
+        dims.d[i] = sizes[i];
+    }
+    return dims;
+}
 
 void RifeTensorRT::handleModel() {
     std::string filename = modelsMap(interpolateMethod, "onnx", half, ensemble);
@@ -82,50 +101,76 @@ void RifeTensorRT::handleModel() {
 
     bindings = { dummyInput.data_ptr(), dummyOutput.data_ptr() };
 
-    // Additional setup for TensorRT API usage
-    for (int i = 0; i < engine->getNbIOTensors(); i++) {
-        const char* name = std::to_string(i).c_str();
-        if (context->setInputShape(name, nvinfer1::Dims4{ 1, 7, height, width })) {
-            // Successfully set the input shape
-        }
-        else {
-            std::cerr << "Error: setInputShape or equivalent method is not supported in this TensorRT version." << std::endl;
+    // Set Tensor Addresses and Input Shapes
+    for (int i = 0; i < engine->getNbIOTensors(); ++i) {
+        const char* tensorName = engine->getIOTensorName(i);
+        void* bindingPtr = (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) ? 
+                            static_cast<void*>(dummyInput.data_ptr()) : 
+                            static_cast<void*>(dummyOutput.data_ptr());
+        context->setTensorAddress(tensorName, bindingPtr);
+
+        if (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) {
+            nvinfer1::Dims dims = toDims(dummyInput.sizes());
+            context->setInputShape(tensorName, dims);
         }
     }
-};
+
+    firstRun = true;
+    useI0AsSource = true;
+
+    // Debug output for tensor information
+    std::cout << "Engine has " << engine->getNbIOTensors() << " I/O tensors." << std::endl;
+    for (int i = 0; i < engine->getNbIOTensors(); ++i) {
+        const char* tensorName = engine->getIOTensorName(i);
+        std::cout << "Tensor " << i << ": " << tensorName 
+                  << " | Is Input: " << (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) 
+                  << " | Dimensions: " << engine->getTensorShape(tensorName).d[0]
+                  << ", " << engine->getTensorShape(tensorName).d[1]
+                  << ", " << engine->getTensorShape(tensorName).d[2] << std::endl;
+    }
+}
 
 at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
-    return frame.to(device, dType, /*non_blocking=*/false, /*copy=*/false)
-        .permute({ 2, 0, 1 })
-        .unsqueeze(0)
-        .mul(1.0 / 255.0)
+    std::cout << "Processing frame..." << std::endl;
+    std::cout << "Min value: " << frame.argmin().item<int>() << std::endl;
+    std::cout << "Max value: " << frame.argmax().item<int>() << std::endl;
+
+    // Ensure the frame is properly normalized
+    auto processed = frame.to(device, torch::kFloat32, /*non_blocking=*/false, /*copy=*/true)
+        .permute({ 2, 0, 1 })  // Change the order of the dimensions: from HWC to CHW
+        .unsqueeze(0)           // Add a batch dimension
+        .div(255.0)             // Normalize to [0, 1]
         .contiguous();
+
+    std::cout << "Processed frame min value: " << processed.argmin().item<int>() << std::endl;
+    std::cout << "Processed frame max value: " << processed.argmax().item<int>() << std::endl;
+
+    return processed;
 }
 
-void RifeTensorRT::cacheFrame() {
-    I0.copy_(I1, true);
-}
-
-void RifeTensorRT::cacheFrameReset(const at::Tensor& frame) {
-    I0.copy_(processFrame(frame), true);
-    useI0AsSource = true;
-}
-
-
-void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, std::ofstream& writeBuffer) {
+void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, cv::VideoWriter& writer) {
     c10::cuda::CUDAStreamGuard guard(stream);
 
     if (firstRun) {
-        I0.copy_(processFrame(frame), true);
+        I0.copy_(processFrame(frame), true); // No need to normalize again here
+        std::cout << "First run, caching the first frame." << std::endl;
         firstRun = false;
         return;
     }
 
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
-    destination.copy_(processFrame(frame), true);
+    destination.copy_(processFrame(frame), true); // Normalize the frame by dividing by 255.0
 
-    // Process in the background with multiple streams for overlapping tasks
+    std::cout << "Source tensor sizes: " << source.sizes() << std::endl;
+    std::cout << "Destination tensor sizes: " << destination.sizes() << std::endl;
+    std::cout <<"Source tensor min value: " << source.argmin().item<int>() << std::endl;
+    std::cout << "Source tensor max value: " << source.argmax().item<int>() << std::endl;
+    
+    std::cout << "Destination tensor min value: " << destination.argmin().item<int>() << std::endl;
+    std::cout << "Destination tensor max value: " << destination.argmax().item<int>() << std::endl;
+   
+
     for (int i = 0; i < interpolateFactor - 1; ++i) {
         at::Tensor timestep = torch::full({ 1, 1, height, width },
             (i + 1) * 1.0 / interpolateFactor,
@@ -133,22 +178,46 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, std::ofstream& w
 
         dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true).contiguous();
 
-        // Bind input and output tensors
+        // Bind input and output tensors to the context
         context->setTensorAddress("input", dummyInput.data_ptr());
         context->setTensorAddress("output", dummyOutput.data_ptr());
 
-        context->enqueueV3(static_cast<cudaStream_t>(stream));
+        // Execute TensorRT inference
+        if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
+            std::cerr << "Error during TensorRT inference!" << std::endl;
+            return;
+        }
         cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 
-        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0);
+        // Convert output tensor to CPU and ensure it has the correct dimensions
+        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 })
+            .mul(255.0)
+            .clamp(0, 255)
+            .to(torch::kU8)
+            .to(torch::kCPU); // Multiply back to the range [0, 255] and convert to 8-bit
+
         cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 
-        if (!benchmark) {
-            // Asynchronously write output to disk
-            writeBuffer.write(reinterpret_cast<const char*>(output.data_ptr()), output.nbytes());
+        // Debug: Print a small slice of the output tensor
+        std::cout << "Output tensor min value: " << output.argmin().item<float>() << std::endl;
+        std::cout << "Output tensor max value: " << output.argmax().item<float>() << std::endl;
+
+        // Convert the output tensor to cv::Mat and write it to the video file
+        cv::Mat outputFrame(height, width, CV_8UC3);
+        std::memcpy(outputFrame.data, output.data_ptr(), output.nbytes());
+
+        // Check if the frame has valid data
+        if (!outputFrame.empty()) {
+            std::cout << "Writing frame to video. First pixel values: "
+                << "B: " << static_cast<float>(outputFrame.at<cv::Vec3b>(0, 0)[0]) << ", "
+                << "G: " << static_cast<float>(outputFrame.at<cv::Vec3b>(0, 0)[1]) << ", "
+                << "R: " << static_cast<float>(outputFrame.at<cv::Vec3b>(0, 0)[2]) << std::endl;
+            writer.write(outputFrame);
+        }
+        else {
+            std::cerr << "Output frame is empty!" << std::endl;
         }
     }
+
+    useI0AsSource = !useI0AsSource;
 }
-
-
-

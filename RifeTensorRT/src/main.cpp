@@ -46,23 +46,26 @@ int main(int argc, char** argv) {
     // Create RifeTensorRT instance with the model name
     int width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
     int height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+    double fps = cap.get(cv::CAP_PROP_FPS);
+
     RifeTensorRT rife(modelName, 2, width, height, true, false);
 
-    // Retrieve FPS of the video
-    double fps = cap.get(cv::CAP_PROP_FPS);
-    std::cout << "Original Video FPS: " << fps << std::endl;
+    int codec = cv::VideoWriter::fourcc('H', '2', '6', '4');
+    cv::VideoWriter writer(outputVideoPath, codec, fps, cv::Size(width, height), true);
+
+    if (!writer.isOpened()) {
+        std::cerr << "Failed to open video writer!" << std::endl;
+        return 1;
+    }
 
     cv::Mat frame;
-    std::ofstream outputStream(outputVideoPath, std::ios::binary);
-
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
     std::cout << "Processing video..." << std::endl;
     while (cap.read(frame)) {
-        // Convert frame to tensor and run interpolation
         at::Tensor tensorFrame = torch::from_blob(frame.data, { frame.rows, frame.cols, 3 }, torch::kByte);
-        rife.run(tensorFrame, false, outputStream);
+        rife.run(tensorFrame, false, writer);
 
         frameCount++;
     }
@@ -75,7 +78,7 @@ int main(int argc, char** argv) {
     std::cout << "Processed " << frameCount << " frames in " << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
-    outputStream.close();
+    writer.release();
     cap.release();
     return 0;
 }

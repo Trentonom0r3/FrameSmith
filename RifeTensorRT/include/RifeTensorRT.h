@@ -6,6 +6,7 @@
 #include <NvInfer.h>
 #include <fstream>
 #include <c10/cuda/CUDAStream.h> // Ensure correct include for CUDAStream
+#include <opencv2/opencv.hpp>
 
 class RifeTensorRT {
 public:
@@ -19,7 +20,7 @@ public:
     );
 
 
-    void run(const at::Tensor& frame, bool benchmark, std::ofstream& writeBuffer);
+    void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, cv::VideoWriter& writer);
 
 private:
     void handleModel();

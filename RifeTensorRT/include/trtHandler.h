@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <opencv2/opencv.hpp>
 
 using namespace nvinfer1;
 using namespace nvonnxparser;
