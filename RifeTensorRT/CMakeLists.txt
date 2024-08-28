@@ -4,12 +4,21 @@ project(RifeTensorRT)
 set(CMAKE_CXX_STANDARD 17)
 
 # Set paths to your dependencies
-set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch")
-set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1")
-set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26")
+set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch" CACHE PATH "Path to Torch directory")
+set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" CACHE PATH "Path to CUDA Toolkit directory")
+set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
 
 # Add vcpkg to CMAKE_PREFIX_PATH
 set(CMAKE_PREFIX_PATH "C:/Users/tjerf/vcpkg/installed/x64-windows;${Torch_DIR};${TENSORRT_DIR}")
+
+# Platform-specific options
+if(WIN32)
+    set(LIB_SUFFIX ".lib")
+    set(DLL_SUFFIX ".dll")
+elseif(UNIX)
+    set(LIB_SUFFIX ".so")
+    set(DLL_SUFFIX ".so")
+endif()
 
 # Find CUDA
 find_package(CUDA REQUIRED)
@@ -25,8 +34,7 @@ find_package(OpenCV REQUIRED)
 
 # Include directories
 include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} include/ src/ ${TENSORRT_DIR}/include)
-#print the opencv include directories
-message(STATUS "OpenCV_INCLUDE_DIRS: ${OpenCV_INCLUDE_DIRS}")
+
 # Source files location
 set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp)
 
@@ -41,8 +49,8 @@ target_link_libraries(RifeTensorRT
     protobuf::libprotobuf
     protobuf::libprotobuf-lite
     protobuf::libprotoc
-    ${TENSORRT_DIR}/lib/nvinfer_10.lib  # Link TensorRT library
-    ${TENSORRT_DIR}/lib/nvinfer_plugin_10.lib  # Link TensorRT plugin library
+    ${TENSORRT_DIR}/lib/nvinfer_10${LIB_SUFFIX}  # Link TensorRT library
+    ${TENSORRT_DIR}/lib/nvinfer_plugin_10${LIB_SUFFIX}  # Link TensorRT plugin library
 )
 
 # If Torch uses C++17, ensure compatibility
@@ -66,12 +74,58 @@ if(WIN32)
   target_link_libraries(RifeTensorRT "${TORCH_LIBRARIES}")
 endif()
 
-#link curl
-target_link_libraries(RifeTensorRT "C:/Users/tjerf/vcpkg/installed/x64-windows/lib/libcurl.lib")
-#link tensorrt libs
-target_link_libraries(RifeTensorRT "${TENSORRT_DIR}/lib/nvonnxparser_10.lib")
+# Link curl
+if(WIN32)
+    target_link_libraries(RifeTensorRT "C:/Users/tjerf/vcpkg/installed/x64-windows/lib/libcurl${LIB_SUFFIX}")
+elseif(UNIX)
+    find_package(CURL REQUIRED)
+    target_link_libraries(RifeTensorRT ${CURL_LIBRARIES})
+endif()
+
+# Link TensorRT libs
+target_link_libraries(RifeTensorRT "${TENSORRT_DIR}/lib/nvonnxparser_10${LIB_SUFFIX}")
+
 # Set RPATH for Linux or MacOS if needed
-set(CMAKE_BUILD_RPATH "$ORIGIN")
+if(UNIX)
+    set(CMAKE_BUILD_RPATH "$ORIGIN")
+endif()
 
 # Enable verbose output for troubleshooting
 set(CMAKE_VERBOSE_MAKEFILE ON)
+
+# Copy necessary dependencies (DLLs/SOs) to the output directory
+if(WIN32)
+    set(DEPENDENCY_DIRS
+        "${Torch_DIR}/lib"  # Torch DLLs
+        "${CUDA_TOOLKIT_ROOT_DIR}/bin"  # CUDA DLLs
+        "${TENSORRT_DIR}/lib"  # TensorRT DLLs
+        "C:/Users/tjerf/vcpkg/installed/x64-windows/bin"  # VCPKG DLLs (like libcurl.dll)
+        "${OpenCV_DIR}/bin"  # OpenCV DLLs
+    )
+
+    foreach(dir ${DEPENDENCY_DIRS})
+        file(GLOB DLLS "${dir}/*${DLL_SUFFIX}")
+        foreach(dll ${DLLS})
+            add_custom_command(TARGET RifeTensorRT POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${dll}" $<TARGET_FILE_DIR:RifeTensorRT>)
+        endforeach()
+    endforeach()
+elseif(UNIX)
+    # On UNIX-like systems, shared libraries (*.so) might need to be copied as well.
+    set(DEPENDENCY_DIRS
+        "${Torch_DIR}/lib"  # Torch SOs
+        "${CUDA_TOOLKIT_ROOT_DIR}/lib64"  # CUDA SOs
+        "${TENSORRT_DIR}/lib"  # TensorRT SOs
+        "/usr/lib/x86_64-linux-gnu"  # Common system library path
+    )
+
+    foreach(dir ${DEPENDENCY_DIRS})
+        file(GLOB SO_FILES "${dir}/*${DLL_SUFFIX}")
+        foreach(so_file ${SO_FILES})
+            add_custom_command(TARGET RifeTensorRT POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${so_file}" $<TARGET_FILE_DIR:RifeTensorRT>)
+        endforeach()
+    endforeach()
+endif()

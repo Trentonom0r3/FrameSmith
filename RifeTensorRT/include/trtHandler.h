@@ -1,3 +1,5 @@
+#pragma once
+
 #include "coloredPrints.h"
 #include <fstream>
 #include <iostream>

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -10,7 +12,7 @@
 namespace fs = std::filesystem;
 
 
-std::vector<std::string> modelsList() {
+inline std::vector<std::string> modelsList() {
     return {
         // Add all the models listed in the Python code
         "shufflespan", "shufflespan-directml", "shufflespan-tensorrt",
@@ -36,7 +38,7 @@ std::vector<std::string> modelsList() {
     };
 }
 
-std::string modelsMap(const std::string& model, const std::string& modelType = "pth", bool half = true, bool ensemble = false) {
+inline std::string modelsMap(const std::string& model, const std::string& modelType = "pth", bool half = true, bool ensemble = false) {
     if (model == "shufflespan" || model == "shufflespan-directml" || model == "shufflespan-tensorrt") {
         return (modelType == "pth") ? "sudo_shuffle_span_10.5m.pth" :
             (half ? "sudo_shuffle_span_op20_10.5m_1080p_fp16_op21_slim.onnx" : "sudo_shuffle_span_op20_10.5m_1080p_fp32_op21_slim.onnx");
@@ -160,10 +162,17 @@ std::string modelsMap(const std::string& model, const std::string& modelType = "
         std::cerr << "Model not found: " << model << std::endl;
         return "";
     }
-}
+}// Define the URLs
+inline const std::string TASURL = "https://github.com/NevermindNilas/TAS-Modes-Host/releases/download/main/";
+inline const std::string DEPTHURL = "https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/";
+inline const std::string SUDOURL = "https://github.com/styler00dollar/VSGAN-tensorrt-docker/releases/download/models/";
+
+inline const std::string DEPTHV2URLSMALL = "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/";
+inline const std::string DEPTHV2URLBASE = "https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/";
+inline const std::string DEPTHV2URLLARGE = "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/";
 
 // Helper function to get the download path and create directories if needed
-std::string getWeightsDir() {
+inline std::string getWeightsDir() {
     std::string weightsDir;
 #ifdef _WIN32
     char* appdata = getenv("APPDATA");
@@ -190,12 +199,12 @@ std::string getWeightsDir() {
 }
 
 // Utility function for writing data during a CURL download
-size_t write_data(void* ptr, size_t size, size_t nmemb, FILE* stream) {
+inline size_t write_data(void* ptr, size_t size, size_t nmemb, FILE* stream) {
     return fwrite(ptr, size, nmemb, stream);
 }
 
 // Function to download the model file
-std::string downloadAndLog(const std::string& model, const std::string& filename, const std::string& downloadUrl, const std::string& folderPath, int retries = 3) {
+inline std::string downloadAndLog(const std::string& model, const std::string& filename, const std::string& downloadUrl, const std::string& folderPath, int retries = 3) {
     std::cout << "Attempting to download model: " << model << " to: " << folderPath << "/" << filename << " from: " << downloadUrl << "\n" << std::endl;
 
     std::string filePath = folderPath + "/" + filename;
@@ -243,7 +252,7 @@ std::string downloadAndLog(const std::string& model, const std::string& filename
 }
 
 // Function to download models
-std::string downloadModels(const std::string& model, const std::string& modelType = "pth", bool half = true, bool ensemble = false) {
+inline std::string downloadModels(const std::string& model, const std::string& modelType = "pth", bool half = true, bool ensemble = false) {
     std::string weightsDir = getWeightsDir();
 
     std::string filename = modelsMap(model, modelType, half, ensemble);
@@ -257,7 +266,42 @@ std::string downloadModels(const std::string& model, const std::string& modelTyp
     fs::create_directories(folderPath);
     std::cout << "Downloading model to: " << folderPath << std::endl;
 
-    std::string fullUrl = "https://github.com/NevermindNilas/TAS-Modes-Host/releases/download/main/" + filename;
+    std::string fullUrl;
+    if (model == "rife4.22-tensorrt" || model == "rife4.21-tensorrt" ||
+        model == "rife4.20-tensorrt" || model == "rife4.18-tensorrt" ||
+        model == "rife4.17-tensorrt" || model == "rife4.6-tensorrt" ||
+        model == "span-tensorrt" || model == "span-directml" ||
+        model == "shift_lpips-tensorrt" || model == "shift_lpips-directml") {
 
-    return downloadAndLog(model, filename, fullUrl, folderPath);
+        fullUrl = SUDOURL + filename;
+        if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
+            return fullUrl;
+        }
+        else {
+            std::cerr << "Failed to download from SUDOURL, trying TASURL..." << std::endl;
+            fullUrl = TASURL + filename;
+            if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
+                return fullUrl;
+            }
+            throw std::runtime_error("Failed to download model from both SUDOURL and TASURL.");
+        }
+    }
+    else if (model == "small_v2") {
+        fullUrl = DEPTHV2URLSMALL + filename;
+    }
+    else if (model == "base_v2") {
+        fullUrl = DEPTHV2URLBASE + filename;
+    }
+    else if (model == "large_v2") {
+        fullUrl = DEPTHV2URLLARGE + filename;
+    }
+    else {
+        fullUrl = TASURL + filename;
+    }
+
+    if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
+        return fullUrl;
+    }
+
+    throw std::runtime_error("Failed to download model.");
 }

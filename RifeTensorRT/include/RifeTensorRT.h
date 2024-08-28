@@ -1,6 +1,6 @@
 #ifndef RIFETENSORRT_H
 #define RIFETENSORRT_H
-
+#pragma once
 #include <torch/torch.h>
 #include <torch/cuda.h>
 #include <NvInfer.h>
