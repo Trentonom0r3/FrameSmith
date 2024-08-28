@@ -15,7 +15,7 @@ RifeTensorRT is a C++ application that uses TensorRT for fast, high-performance 
 - **libtorch** (Tested with libtorch 2.4.0+cu121)
 - **OpenCV** (Tested with OpenCV 4.x)
 - **Protobuf** (libprotobuf, libprotobuf-lite, protoc)
-- **libcurl** (optional, for downloading models)
+- **libcurl** ( for downloading models)
 
 ## Building on Windows
 
