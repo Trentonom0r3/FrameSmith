@@ -6,7 +6,14 @@
 #include <NvInfer.h>
 #include <fstream>
 #include <c10/cuda/CUDAStream.h> // Ensure correct include for CUDAStream
-#include <opencv2/opencv.hpp>
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+#include <libavutil/frame.h>
+#include <libavutil/imgutils.h>
+}
 
 class RifeTensorRT {
 public:
@@ -19,8 +26,7 @@ public:
         bool ensemble = false
     );
 
-
-    void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, cv::VideoWriter& writer);
+    void run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts);
 
 private:
     void handleModel();
@@ -42,7 +48,6 @@ private:
     std::vector<void*> bindings;
     torch::ScalarType dType;
     c10::cuda::CUDAStream stream;
-
 
     nvinfer1::ICudaEngine* engine;
     nvinfer1::IExecutionContext* context;

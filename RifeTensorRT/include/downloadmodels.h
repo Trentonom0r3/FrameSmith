@@ -177,7 +177,7 @@ inline std::string getWeightsDir() {
 #ifdef _WIN32
     char* appdata = getenv("APPDATA");
     if (appdata) {
-        std::string mainPath = std::string(appdata) + "\\TheAnimeScripter";
+        std::string mainPath = std::string(appdata) + "\\RifeCpp";
         weightsDir = mainPath + "\\weights";
         fs::create_directories(weightsDir);
         std::cout << "Weights directory: " << weightsDir << std::endl;
@@ -188,29 +188,50 @@ inline std::string getWeightsDir() {
 #else
     char* xdgConfigHome = getenv("XDG_CONFIG_HOME");
     if (xdgConfigHome) {
-        weightsDir = std::string(xdgConfigHome) + "/TheAnimeScripter/weights";
+        weightsDir = std::string(xdgConfigHome) + "/RifeCpp/weights";
     }
     else {
-        weightsDir = std::string(getenv("HOME")) + "/.config/TheAnimeScripter/weights";
+        weightsDir = std::string(getenv("HOME")) + "/.config/RifeCpp/weights";
     }
     fs::create_directories(weightsDir);
 #endif
     return weightsDir;
 }
 
-// Utility function for writing data during a CURL download
-inline size_t write_data(void* ptr, size_t size, size_t nmemb, FILE* stream) {
-    return fwrite(ptr, size, nmemb, stream);
+void printProgress(double percentage, double speed) {
+    int barWidth = 50;  // Width of the progress bar
+    std::cout << "[";
+    int pos = static_cast<int>(barWidth * percentage);
+    for (int i = 0; i < barWidth; ++i) {
+        if (i < pos) std::cout << "=";
+        else if (i == pos) std::cout << ">";
+        else std::cout << " ";
+    }
+    std::cout << "] " << int(percentage * 100.0) << "% (" << speed << " KB/s)\r";
+    std::cout.flush();
 }
 
-// Function to download the model file
-inline std::string downloadAndLog(const std::string& model, const std::string& filename, const std::string& downloadUrl, const std::string& folderPath, int retries = 3) {
-    std::cout << "Attempting to download model: " << model << " to: " << folderPath << "/" << filename << " from: " << downloadUrl << "\n" << std::endl;
+size_t write_data(void* ptr, size_t size, size_t nmemb, FILE* stream) {
+    size_t written = fwrite(ptr, size, nmemb, stream);
+    fflush(stream);  // Ensure all data is flushed to disk
+    return written;
+}
 
-    std::string filePath = folderPath + "/" + filename;
+int progress_callback(void* ptr, curl_off_t total_to_download, curl_off_t now_downloaded, curl_off_t, curl_off_t) {
+    if (total_to_download > 0) {
+        double progress = static_cast<double>(now_downloaded) / total_to_download;
+        double speed = *(static_cast<double*>(ptr));  // Speed in KB/s
+        printProgress(progress, speed);
+    }
+    return 0;
+}
+
+std::string downloadAndLog(const std::string& model, const std::string& filename, const std::string& downloadUrl, const std::string& folderPath, int retries = 3) {
+    std::string filePath = folderPath + "\\" + filename;
+
     for (int attempt = 0; attempt < retries; ++attempt) {
         try {
-            if (fs::exists(filePath)) {
+            if (std::filesystem::exists(filePath)) {
                 std::cout << model << " model already exists at: " << filePath << std::endl;
                 return filePath;
             }
@@ -222,16 +243,27 @@ inline std::string downloadAndLog(const std::string& model, const std::string& f
                     throw std::runtime_error("Failed to open file for writing: " + filePath);
                 }
 
+                double speed = 0.0;
+
                 curl_easy_setopt(curl, CURLOPT_URL, downloadUrl.c_str());
                 curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
                 curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-                CURLcode res = curl_easy_perform(curl);
+                curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+                curl_easy_setopt(curl, CURLOPT_VERBOSE, 0L);
+                curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);  // Enable progress meter
+                curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
+                curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &speed);
+                curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+                curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &speed);
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+                curl_easy_setopt(curl, CURLOPT_MAX_RECV_SPEED_LARGE, 1048576L); // 1MB/s limit
 
+                CURLcode res = curl_easy_perform(curl);
                 if (res != CURLE_OK) {
                     std::cerr << "Download failed: " << curl_easy_strerror(res) << std::endl;
                     fclose(fp);
                     curl_easy_cleanup(curl);
-                    fs::remove(filePath);  // Clean up partially downloaded files
+                    std::filesystem::remove(filePath);  // Clean up partially downloaded files
                     if (attempt == retries - 1) {
                         throw std::runtime_error("Failed to download after multiple attempts");
                     }
@@ -239,17 +271,21 @@ inline std::string downloadAndLog(const std::string& model, const std::string& f
                 else {
                     fclose(fp);
                     curl_easy_cleanup(curl);
-                    std::cout << "Downloaded: " << filePath << std::endl;
+                    size_t downloaded_size = std::filesystem::file_size(filePath);
+                    std::cout << "\nDownloaded: " << filePath << " (Size: " << downloaded_size << " bytes)" << std::endl;
                     return filePath;
                 }
             }
         }
         catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(5));  // Sleep before retrying
         }
     }
-    return "";
+
+    throw std::runtime_error("Failed to download model after multiple attempts.");
 }
+
 
 // Function to download models
 inline std::string downloadModels(const std::string& model, const std::string& modelType = "pth", bool half = true, bool ensemble = false) {
@@ -262,7 +298,7 @@ inline std::string downloadModels(const std::string& model, const std::string& m
         folderName = model.substr(0, model.find('-')) + "-onnx";
     }
 
-    std::string folderPath = weightsDir + "/" + folderName;
+    std::string folderPath = weightsDir + "\\" + folderName;
     fs::create_directories(folderPath);
     std::cout << "Downloading model to: " << folderPath << std::endl;
 
@@ -274,14 +310,30 @@ inline std::string downloadModels(const std::string& model, const std::string& m
         model == "shift_lpips-tensorrt" || model == "shift_lpips-directml") {
 
         fullUrl = SUDOURL + filename;
+        bool isSudoUrl = true;
         if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
-            return fullUrl;
+            //output full url, modle name, filename for debugging
+            std::cout << "Downloaded from SUDOURL: " << fullUrl << std::endl;
+            std::cout << "Model: " << model << std::endl;
+            std::cout << "Filename: " << filename << std::endl;
+            std::cout << "Folderpath: " << folderPath << std::endl;
+            std::cout << "WeightsDir: " << weightsDir << std::endl;
+            std::cout << "FolderName: " << folderName << std::endl;
+            std::cout << "FullUrl: " << fullUrl << std::endl;
+            return folderPath + "\\" + filename;
         }
         else {
             std::cerr << "Failed to download from SUDOURL, trying TASURL..." << std::endl;
             fullUrl = TASURL + filename;
             if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
-                return fullUrl;
+                std::cout << "Downloaded from TASURL: " << fullUrl << std::endl;
+                std::cout << "Model: " << model << std::endl;
+                std::cout << "Filename: " << filename << std::endl;
+                std::cout << "Folderpath: " << folderPath << std::endl;
+                std::cout << "WeightsDir: " << weightsDir << std::endl;
+                std::cout << "FolderName: " << folderName << std::endl;
+                std::cout << "FullUrl: " << fullUrl << std::endl;
+                return folderPath + "\\" + filename;
             }
             throw std::runtime_error("Failed to download model from both SUDOURL and TASURL.");
         }
@@ -297,9 +349,11 @@ inline std::string downloadModels(const std::string& model, const std::string& m
     }
     else {
         fullUrl = TASURL + filename;
+        std::cout << "Downloading from TASURL: " << fullUrl << std::endl;
     }
 
     if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
+        std::cout << "Downloaded from TASURL: " << fullUrl << std::endl;
         return fullUrl;
     }
 
