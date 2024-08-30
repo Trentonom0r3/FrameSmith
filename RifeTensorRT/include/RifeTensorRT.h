@@ -26,13 +26,17 @@ public:
         bool ensemble = false
     );
 
-    void run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts);
+    ~RifeTensorRT();  // Destructor to clean up resources
+    void run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts, int64_t pts_step);
+
 
 private:
     void handleModel();
     at::Tensor processFrame(const at::Tensor& frame) const;
     void cacheFrame();
     void cacheFrameReset(const at::Tensor& frame);
+    void allocateResources(AVCodecContext* enc_ctx);  // Resource allocation method
+    void freeResources();  // Resource cleanup method
 
     std::string interpolateMethod;
     int interpolateFactor;
@@ -42,7 +46,7 @@ private:
     bool ensemble;
     bool firstRun;
     bool useI0AsSource;
-
+    int64_t last_dts = AV_NOPTS_VALUE;
     torch::Device device;
     torch::Tensor I0, I1, dummyInput, dummyOutput;
     std::vector<void*> bindings;
@@ -52,6 +56,10 @@ private:
     nvinfer1::ICudaEngine* engine;
     nvinfer1::IExecutionContext* context;
     std::string enginePath;
+
+    // New member variables for AVFrame and SwsContext
+    AVFrame* frame_yuv;
+    SwsContext* sws_ctx;
 };
 
 #endif

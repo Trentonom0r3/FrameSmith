@@ -9,6 +9,7 @@
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
 
+
 RifeTensorRT::RifeTensorRT(
     std::string interpolateMethod,
     int interpolateFactor,
@@ -25,14 +26,61 @@ ensemble(ensemble),
 firstRun(true),
 useI0AsSource(true),
 device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-stream(c10::cuda::getStreamFromPool(false, device.index()))
+stream(c10::cuda::getStreamFromPool(false, device.index())),
+frame_yuv(nullptr),  // Initialize to nullptr
+sws_ctx(nullptr)  // Initialize to nullptr
 {
     if (width > 1920 && height > 1080 && half) {
-        std::cout << yellow("UHD and fp16 are not compatible with RIFE, defaulting to fp32") << std::endl;
+        std::cout << "UHD and fp16 are not compatible with RIFE, defaulting to fp32" << std::endl;
         this->half = false;
     }
+
     handleModel();
 }
+
+void RifeTensorRT::allocateResources(AVCodecContext* enc_ctx) {
+    // Allocate AVFrame
+    frame_yuv = av_frame_alloc();
+    if (!frame_yuv) {
+        std::cerr << "Error: Could not allocate AVFrame for YUV conversion." << std::endl;
+        throw std::runtime_error("Failed to allocate AVFrame");
+    }
+
+    frame_yuv->format = AV_PIX_FMT_YUV420P;
+    frame_yuv->width = enc_ctx->width;
+    frame_yuv->height = enc_ctx->height;
+    av_frame_get_buffer(frame_yuv, 0);
+
+    // Allocate SwsContext
+    sws_ctx = sws_getContext(
+        width, height, AV_PIX_FMT_RGB24,
+        enc_ctx->width, enc_ctx->height, AV_PIX_FMT_YUV420P,
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );
+
+    if (!sws_ctx) {
+        std::cerr << "Error: Could not initialize SwsContext." << std::endl;
+        av_frame_free(&frame_yuv);
+        throw std::runtime_error("Failed to initialize SwsContext");
+    }
+}
+
+void RifeTensorRT::freeResources() {
+    if (sws_ctx) {
+        sws_freeContext(sws_ctx);
+        sws_ctx = nullptr;
+    }
+    if (frame_yuv) {
+        av_frame_free(&frame_yuv);
+        frame_yuv = nullptr;
+    }
+}
+
+// Destructor to clean up resources
+RifeTensorRT::~RifeTensorRT() {
+    freeResources();
+}
+
 
 void RifeTensorRT::cacheFrame() {
     I0.copy_(I1, true);
@@ -48,7 +96,6 @@ nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     dims.nbDims = sizes.size();
     for (int i = 0; i < dims.nbDims; ++i) {
         dims.d[i] = sizes[i];
-        std::cout << sizes[i] << " ";
 
     }
     return dims;
@@ -59,7 +106,6 @@ void RifeTensorRT::handleModel() {
     std::string folderName = interpolateMethod;
     folderName.replace(folderName.find("-tensorrt"), 9, "-onnx");
 
-    std::cout << "Model: " << filename << std::endl;
     std::filesystem::path modelPath = std::filesystem::path(getWeightsDir()) / folderName / filename;
 
     if (!std::filesystem::exists(modelPath)) {
@@ -72,13 +118,6 @@ void RifeTensorRT::handleModel() {
     }
 
     bool isCudnnEnabled = torch::cuda::cudnn_is_available();
-    std::cout << "cuDNN is " << (isCudnnEnabled ? "enabled" : "disabled") << std::endl;
-
-    // Initialize TensorRT engine
-    std::cout << "Setting up TensorRT engine with Arguments: " << std::endl;
-    std::cout << "Model Path: " << modelPath << std::endl;
-    std::cout << "Half Precision: " << half << std::endl;
-    std::cout << "Input Shape: " << "{ 1, 7, " << height << ", " << width << " }" << std::endl;
 
     enginePath = TensorRTEngineNameHandler(modelPath.string(), half, { 1, 7, height, width });
     std::tie(engine, context) = TensorRTEngineLoader(enginePath);
@@ -107,32 +146,8 @@ void RifeTensorRT::handleModel() {
             static_cast<void*>(dummyOutput.data_ptr());
         bool setaddyinfo = context->setTensorAddress(tensorName, bindingPtr);
 
-        if (!setaddyinfo) {
-			std::cerr << "Failed to set tensor address for " << tensorName << std::endl;
-			///return;
-		}
-
         if (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) {
-            auto expectedDims = engine->getTensorShape(tensorName);
-            std::cout << "TensorRT expected dimensions: ";
-            for (int j = 0; j < expectedDims.nbDims; ++j) {
-                std::cout << expectedDims.d[j] << " ";
-            }
-            std::cout << std::endl;
-
-            // Adjust input dimensions to match what TensorRT expects
-            nvinfer1::Dims dims = toDims(dummyInput.sizes());
-            dims.d[1] = expectedDims.d[1];  // Ensure the channel/temporal dimension matches
-            dims.d[2] = expectedDims.d[2];  // Ensure the height/other dimension matches
-            dims.d[3] = expectedDims.d[3];  // Ensure the width/other dimension matches
-
-            bool success = context->setInputShape(tensorName, dims);
-            nvinfer1::Dims dims2  = context->getTensorShape(tensorName);
-            std::cout << "TensorRT input dimensions: ";
-            for (int j = 0; j < dims2.nbDims; ++j) {
-				std::cout << dims2.d[j] << " ";
-			}
-            std::cout << std::endl;
+            bool success = context->setInputShape(tensorName, toDims(dummyInput.sizes()));
             if (!success) {
                 std::cerr << "Failed to set input shape for " << tensorName << std::endl;
                 return;
@@ -162,77 +177,74 @@ at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
     }
 }
 
-void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts) {
+void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts, int64_t pts_step) {
     c10::cuda::CUDAStreamGuard guard(stream);
-
+    std::cout << "Running with Arguments: " << "Pts: " << pts << " Pts Step: " << pts_step << std::endl;
     if (firstRun) {
+        // On the first run, initialize the source frame and allocate necessary resources.
         I0.copy_(processFrame(frame), true);
         firstRun = false;
+
+        // Allocate resources required for encoding.
+        allocateResources(enc_ctx);
+
         return;
     }
 
+    // Toggle between source and destination buffers.
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
     destination.copy_(processFrame(frame), true);
 
     for (int i = 0; i < interpolateFactor - 1; ++i) {
-        at::Tensor timestep = torch::full({ 1, 1, height, width },
-            (i + 1) * 1.0 / interpolateFactor,
-            torch::TensorOptions().dtype(dType).device(device)).contiguous();
+        // Calculate interpolated PTS for the current frame directly
+        int64_t interpolated_pts = pts + av_rescale_q(i * pts_step / interpolateFactor, enc_ctx->time_base, video_stream->time_base);
 
-        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true).contiguous();
+        // Ensure interpolated_pts is non-negative and incrementing
+        if (interpolated_pts < pts) {
+            std::cerr << "Error: interpolated_pts is less than previous PTS!" << std::endl;
+            break;
+        }
 
+        std::cout << "Calculated interpolated PTS: " << interpolated_pts << std::endl;
+
+        // Create a timestep tensor for the current interpolation step.
+        at::Tensor timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+
+        // Prepare the input tensor for TensorRT inference.
+        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
+
+        // Set input and output tensor addresses for the TensorRT context.
         context->setTensorAddress("input", dummyInput.data_ptr());
         context->setTensorAddress("output", dummyOutput.data_ptr());
 
+        // Perform inference using TensorRT.
         if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
             std::cerr << "Error during TensorRT inference!" << std::endl;
-            return;
+            break;
         }
+
+        // Synchronize the CUDA stream.
         cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 
-        at::Tensor output = dummyOutput.squeeze(0)
-            .permute({ 1, 2, 0 })
-            .mul(255.0)
-            .clamp(0, 255)
-            .to(torch::kU8)
-            .to(torch::kCPU); // Convert to CPU for sws_scale
+        // Convert the output tensor to an image format suitable for encoding.
+        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8).to(torch::kCPU).contiguous();
 
-        // Convert RGB frame to YUV420P using sws_scale (inside RifeTensorRT::run)
-        output = output.contiguous();
-        AVFrame* frame_yuv = av_frame_alloc();
-        frame_yuv->format = AV_PIX_FMT_YUV420P;
-        frame_yuv->width = enc_ctx->width;
-        frame_yuv->height = enc_ctx->height;
-        av_frame_get_buffer(frame_yuv, 0);
-
-        SwsContext* sws_ctx = sws_getContext(
-            output.size(1), // width
-            output.size(0), // height
-            AV_PIX_FMT_RGB24,
-            enc_ctx->width, enc_ctx->height, AV_PIX_FMT_YUV420P,
-            SWS_BILINEAR, nullptr, nullptr, nullptr);
-
+        // Define the source slices for sws_scale.
         uint8_t* src_slices[1] = { output.data_ptr<uint8_t>() };
-        int src_stride[1] = { static_cast<int>(output.size(1) * 3) }; // width * 3 channels
+        int src_stride[1] = { static_cast<int>(output.size(1) * 3) };
 
+        // Perform color conversion from RGB to YUV.
         int res = sws_scale(sws_ctx, src_slices, src_stride, 0, output.size(0), frame_yuv->data, frame_yuv->linesize);
         if (res <= 0) {
-            std::cerr << "Error: sws_scale in RifeTensorRT failed with result " << res << std::endl;
+            std::cerr << "Error: sws_scale failed with result " << res << std::endl;
+            break;
         }
 
-        // Debug: Print some YUV pixel values to check if they make sense
-        std::cout << "YUV frame first pixel: Y=" << static_cast<int>(frame_yuv->data[0][0])
-            << " U=" << static_cast<int>(frame_yuv->data[1][0])
-            << " V=" << static_cast<int>(frame_yuv->data[2][0]) << std::endl;
+        // Set the rescaled PTS for the YUV frame.
+        frame_yuv->pts = interpolated_pts;
 
-
-        sws_freeContext(sws_ctx);
-
-        // Set the timestamp for the YUV frame
-        frame_yuv->pts = pts;
-
-        // Send the YUV frame to the encoder
+        // Send the frame to the encoder.
         int ret = avcodec_send_frame(enc_ctx, frame_yuv);
         if (ret == AVERROR(EAGAIN)) {
             AVPacket pkt;
@@ -240,28 +252,29 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* 
             pkt.data = nullptr;
             pkt.size = 0;
 
+            // Handle the case where the encoder is not ready to receive more frames.
             while (avcodec_receive_packet(enc_ctx, &pkt) == 0) {
                 pkt.stream_index = video_stream->index;
                 av_packet_rescale_ts(&pkt, enc_ctx->time_base, video_stream->time_base);
-                ret = av_write_frame(fmt_ctx, &pkt);
-                if (ret < 0) {
-                    std::cerr << "Error writing frame to output file! Error Code: " << ret << std::endl;
+                std::cout << "Encoded packet PTS: " << pkt.pts << ", DTS: " << pkt.dts << std::endl;
+                if (av_write_frame(fmt_ctx, &pkt) < 0) {
+                    std::cerr << "Error writing packet to output file!" << std::endl;
                     av_packet_unref(&pkt);
-                    av_frame_free(&frame_yuv);
-                    return;
+                    break;
                 }
                 av_packet_unref(&pkt);
             }
 
+            // Retry sending the frame after handling pending packets.
             ret = avcodec_send_frame(enc_ctx, frame_yuv);
         }
 
         if (ret < 0) {
-            std::cerr << "Error sending frame to encoder! Error Code: " << ret << std::endl;
-            av_frame_free(&frame_yuv);
-            return;
+            std::cerr << "Error sending frame to encoder!" << std::endl;
+            break;
         }
 
+        // Handle encoded packets.
         AVPacket pkt;
         av_init_packet(&pkt);
         pkt.data = nullptr;
@@ -270,18 +283,17 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* 
         while (avcodec_receive_packet(enc_ctx, &pkt) == 0) {
             pkt.stream_index = video_stream->index;
             av_packet_rescale_ts(&pkt, enc_ctx->time_base, video_stream->time_base);
-            ret = av_write_frame(fmt_ctx, &pkt);
-            if (ret < 0) {
-                std::cerr << "Error writing frame to output file! Error Code: " << ret << std::endl;
+            std::cout << "Final encoded packet PTS: " << pkt.pts << ", DTS: " << pkt.dts << std::endl;
+            if (av_write_frame(fmt_ctx, &pkt) < 0) {
+                std::cerr << "Error writing packet to output file!" << std::endl;
                 av_packet_unref(&pkt);
-                av_frame_free(&frame_yuv);
-                return;
+                break;
             }
             av_packet_unref(&pkt);
         }
-
-        av_frame_free(&frame_yuv);
     }
 
+    // Flip the source buffer flag for the next run.
     useI0AsSource = !useI0AsSource;
 }
+
