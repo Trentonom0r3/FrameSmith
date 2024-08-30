@@ -180,71 +180,54 @@ at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
 void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts, int64_t pts_step) {
     c10::cuda::CUDAStreamGuard guard(stream);
     std::cout << "Running with Arguments: " << "Pts: " << pts << " Pts Step: " << pts_step << std::endl;
+
     if (firstRun) {
-        // On the first run, initialize the source frame and allocate necessary resources.
         I0.copy_(processFrame(frame), true);
         firstRun = false;
-
-        // Allocate resources required for encoding.
         allocateResources(enc_ctx);
-
         return;
     }
 
-    // Toggle between source and destination buffers.
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
     destination.copy_(processFrame(frame), true);
 
     for (int i = 0; i < interpolateFactor - 1; ++i) {
-        // Calculate interpolated PTS for the current frame directly
-        int64_t interpolated_pts = pts + av_rescale_q(i * pts_step / interpolateFactor, enc_ctx->time_base, video_stream->time_base);
+        // Calculate the interpolated PTS
+        int64_t interpolated_pts = pts + av_rescale_q(i * pts_step, enc_ctx->time_base, video_stream->time_base);
+        std::cout << "Calculated interpolated PTS: " << interpolated_pts << " with pts_step: " << pts_step << std::endl;
 
-        // Ensure interpolated_pts is non-negative and incrementing
+        // Ensure PTS is non-negative and incrementing
         if (interpolated_pts < pts) {
             std::cerr << "Error: interpolated_pts is less than previous PTS!" << std::endl;
             break;
         }
 
-        std::cout << "Calculated interpolated PTS: " << interpolated_pts << std::endl;
-
-        // Create a timestep tensor for the current interpolation step.
         at::Tensor timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-
-        // Prepare the input tensor for TensorRT inference.
         dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
 
-        // Set input and output tensor addresses for the TensorRT context.
         context->setTensorAddress("input", dummyInput.data_ptr());
         context->setTensorAddress("output", dummyOutput.data_ptr());
 
-        // Perform inference using TensorRT.
         if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
             std::cerr << "Error during TensorRT inference!" << std::endl;
             break;
         }
 
-        // Synchronize the CUDA stream.
         cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 
-        // Convert the output tensor to an image format suitable for encoding.
         at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8).to(torch::kCPU).contiguous();
-
-        // Define the source slices for sws_scale.
         uint8_t* src_slices[1] = { output.data_ptr<uint8_t>() };
         int src_stride[1] = { static_cast<int>(output.size(1) * 3) };
 
-        // Perform color conversion from RGB to YUV.
         int res = sws_scale(sws_ctx, src_slices, src_stride, 0, output.size(0), frame_yuv->data, frame_yuv->linesize);
         if (res <= 0) {
             std::cerr << "Error: sws_scale failed with result " << res << std::endl;
             break;
         }
 
-        // Set the rescaled PTS for the YUV frame.
         frame_yuv->pts = interpolated_pts;
 
-        // Send the frame to the encoder.
         int ret = avcodec_send_frame(enc_ctx, frame_yuv);
         if (ret == AVERROR(EAGAIN)) {
             AVPacket pkt;
@@ -252,7 +235,6 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* 
             pkt.data = nullptr;
             pkt.size = 0;
 
-            // Handle the case where the encoder is not ready to receive more frames.
             while (avcodec_receive_packet(enc_ctx, &pkt) == 0) {
                 pkt.stream_index = video_stream->index;
                 av_packet_rescale_ts(&pkt, enc_ctx->time_base, video_stream->time_base);
@@ -265,7 +247,6 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* 
                 av_packet_unref(&pkt);
             }
 
-            // Retry sending the frame after handling pending packets.
             ret = avcodec_send_frame(enc_ctx, frame_yuv);
         }
 
@@ -274,7 +255,6 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* 
             break;
         }
 
-        // Handle encoded packets.
         AVPacket pkt;
         av_init_packet(&pkt);
         pkt.data = nullptr;
@@ -293,7 +273,6 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* 
         }
     }
 
-    // Flip the source buffer flag for the next run.
     useI0AsSource = !useI0AsSource;
 }
 

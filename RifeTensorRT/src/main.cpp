@@ -56,10 +56,8 @@ int main(int argc, char** argv) {
     enc_ctx->height = dec_ctx->height;
 
     // Set time_base and framerate for 48 fps.
-    enc_ctx->time_base.num = 1;
-    enc_ctx->time_base.den = 48;
-    enc_ctx->framerate.num = 48;
-    enc_ctx->framerate.den = 1;
+    enc_ctx->time_base = AVRational{ 1, 48 };
+    enc_ctx->framerate = AVRational{ 48, 1 };
 
     enc_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
     avcodec_open2(enc_ctx, encoder, nullptr);
@@ -80,7 +78,11 @@ int main(int argc, char** argv) {
     }
 
     avcodec_parameters_from_context(out_stream->codecpar, enc_ctx);
+
+    // Explicitly set the output stream’s frame rate and time base.
     out_stream->time_base = enc_ctx->time_base;
+    out_stream->avg_frame_rate = AVRational{ 48, 1 };
+    out_stream->r_frame_rate = AVRational{ 48, 1 };
 
     if (!(out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
         if (avio_open(&out_fmt_ctx->pb, outputVideoPath.c_str(), AVIO_FLAG_WRITE) < 0) {
@@ -144,8 +146,10 @@ int main(int argc, char** argv) {
                         std::cerr << "Error: Decoded frame has zero dimensions." << std::endl;
                         continue;
                     }
+
                     std::cout << "Frame PTS: " << frame->pts << std::endl;
                     std::cout << "Frame DTS: " << frame->pkt_dts << std::endl;
+
                     // Perform color conversion from YUV to RGB.
                     int result = sws_scale(sws_ctx, (uint8_t const* const*)frame->data, frame->linesize, 0, frame->height, frame_rgb->data, frame_rgb->linesize);
                     if (result <= 0) {
@@ -159,6 +163,7 @@ int main(int argc, char** argv) {
                     // Log the PTS before running the RIFE interpolation.
                     std::cout << "Main PTS before run: " << pts << std::endl;
                     std::cout << "Frame PTS: within main " << frame->pts << std::endl;
+
                     // Run the RIFE interpolation.
                     rife.run(tensorFrame, false, enc_ctx, outputFrame, out_fmt_ctx, out_stream, pts, pts_step);
 
@@ -220,4 +225,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-
