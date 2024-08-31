@@ -3,8 +3,8 @@ project(RifeTensorRT)
 
 set(CMAKE_CXX_STANDARD 17)
 add_definitions(-w)
-
 # Set paths to your dependencies
+
 if(WIN32)
     set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch" CACHE PATH "Path to Torch directory")
     set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" CACHE PATH "Path to CUDA Toolkit directory")
@@ -23,11 +23,6 @@ elseif(UNIX)
     set(LIB_SUFFIX ".so")
     set(DLL_SUFFIX ".so")
 endif()
-
-#include_directories("/tensorrt/RifeTensorRT/include")
-#include_directories(include)
-
-include_directories("/usr/local/tensorrt/include")
 
 # Find CUDA
 find_package(CUDA REQUIRED)
