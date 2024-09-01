@@ -97,6 +97,18 @@ RifeTensorRT is a C++ application that uses TensorRT for fast, high-performance 
 6. **Ensure SO Files are in the Same Directory**:
    - The build process should automatically copy the necessary `.so` files to the output directory. If any `.so` files are missing, ensure they are in the same directory as the executable or set the `LD_LIBRARY_PATH` accordingly.
 
+## Dockerfile
+
+1. **Build the docker**:
+   ```bash
+   DOCKER_BUILDKIT=1 sudo docker build -t rife_cpp:latest . 
+   ```
+   
+2. **Run the docker**:
+   ```bash
+   sudo docker run --privileged --gpus all -it --rm -v /path/to/RifeTensorRT/:/tensorrt/mount rife_cpp:latest
+   ```
+   
 ## Model Names
 
 You need to specify a model name when running the application. Available models include: (Note that not all are set up to work with the .exe yet)
