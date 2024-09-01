@@ -26,9 +26,7 @@ ensemble(ensemble),
 firstRun(true),
 useI0AsSource(true),
 device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-stream(c10::cuda::getStreamFromPool(false, device.index())),
-frame_yuv(nullptr),  // Initialize to nullptr
-sws_ctx(nullptr)  // Initialize to nullptr
+stream(c10::cuda::getStreamFromPool(false, device.index()))
 {
     if (width > 1920 && height > 1080 && half) {
         std::cout << "UHD and fp16 are not compatible with RIFE, defaulting to fp32" << std::endl;
@@ -37,50 +35,6 @@ sws_ctx(nullptr)  // Initialize to nullptr
 
     handleModel();
 }
-
-void RifeTensorRT::allocateResources(AVCodecContext* enc_ctx) {
-    // Allocate AVFrame
-    frame_yuv = av_frame_alloc();
-    if (!frame_yuv) {
-        std::cerr << "Error: Could not allocate AVFrame for YUV conversion." << std::endl;
-        throw std::runtime_error("Failed to allocate AVFrame");
-    }
-
-    frame_yuv->format = AV_PIX_FMT_YUV420P;
-    frame_yuv->width = enc_ctx->width;
-    frame_yuv->height = enc_ctx->height;
-    av_frame_get_buffer(frame_yuv, 0);
-
-    // Allocate SwsContext
-    sws_ctx = sws_getContext(
-        width, height, AV_PIX_FMT_RGB24,
-        enc_ctx->width, enc_ctx->height, AV_PIX_FMT_YUV420P,
-        SWS_BILINEAR, nullptr, nullptr, nullptr
-    );
-
-    if (!sws_ctx) {
-        std::cerr << "Error: Could not initialize SwsContext." << std::endl;
-        av_frame_free(&frame_yuv);
-        throw std::runtime_error("Failed to initialize SwsContext");
-    }
-}
-
-void RifeTensorRT::freeResources() {
-    if (sws_ctx) {
-        sws_freeContext(sws_ctx);
-        sws_ctx = nullptr;
-    }
-    if (frame_yuv) {
-        av_frame_free(&frame_yuv);
-        frame_yuv = nullptr;
-    }
-}
-
-// Destructor to clean up resources
-RifeTensorRT::~RifeTensorRT() {
-    freeResources();
-}
-
 
 void RifeTensorRT::cacheFrame() {
     I0.copy_(I1, true);
@@ -163,9 +117,8 @@ at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
     try {
         // Ensure the frame is properly normalized
         auto processed = frame.to(device, dType, /*non_blocking=*/false, /*copy=*/true)
-            .permute({ 2, 0, 1 })  // Change the order of the dimensions: from HWC to CHW
-            .unsqueeze(0)           // Add a batch dimension
-            .div(255.0)             // Normalize to [0, 1]
+            .permute({ 0, 3, 1, 2 })  // Change the order of the dimensions: from NHWC to NCHW
+            .div(255.0)               // Normalize to [0, 1]
             .contiguous();
 
         return processed;
@@ -177,102 +130,53 @@ at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
     }
 }
 
-void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, AVCodecContext* enc_ctx, AVFrame* outputFrame, AVFormatContext* fmt_ctx, AVStream* video_stream, int64_t pts, int64_t pts_step) {
+
+cv::Mat RifeTensorRT::run(const cv::Mat& frame) {
+    // Ensure the CUDA stream guard is in place.
     c10::cuda::CUDAStreamGuard guard(stream);
-    std::cout << "Running with Arguments: " << "Pts: " << pts << " Pts Step: " << pts_step << std::endl;
+
+    // Convert OpenCV's BGR image format to RGB for processing.
+    cv::Mat rgbFrame;
+    cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
+
+    // Convert the RGB image to a tensor.
+    at::Tensor inputTensor = torch::from_blob(rgbFrame.data, { 1, rgbFrame.rows, rgbFrame.cols, 3 }, torch::kByte).to(torch::kCUDA);
 
     if (firstRun) {
-        I0.copy_(processFrame(frame), true);
+        // On the first run, initialize the source frame.
+        I0.copy_(processFrame(inputTensor), true);
         firstRun = false;
-        allocateResources(enc_ctx);
-        return;
+        return cv::Mat();
     }
 
+    // Toggle between source and destination buffers.
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
-    destination.copy_(processFrame(frame), true);
+    destination.copy_(processFrame(inputTensor), true);
 
-    for (int i = 0; i < interpolateFactor - 1; ++i) {
-        // Calculate the interpolated PTS
-        int64_t interpolated_pts = pts + av_rescale_q(i * pts_step, enc_ctx->time_base, video_stream->time_base);
-        std::cout << "Calculated interpolated PTS: " << interpolated_pts << " with pts_step: " << pts_step << std::endl;
+    // Perform the interpolation.
+    at::Tensor timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
 
-        // Ensure PTS is non-negative and incrementing
-        if (interpolated_pts < pts) {
-            std::cerr << "Error: interpolated_pts is less than previous PTS!" << std::endl;
-            break;
-        }
+    context->setTensorAddress("input", dummyInput.data_ptr());
+    context->setTensorAddress("output", dummyOutput.data_ptr());
 
-        at::Tensor timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
-
-        context->setTensorAddress("input", dummyInput.data_ptr());
-        context->setTensorAddress("output", dummyOutput.data_ptr());
-
-        if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
-            std::cerr << "Error during TensorRT inference!" << std::endl;
-            break;
-        }
-
-        cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
-
-        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8).to(torch::kCPU).contiguous();
-        uint8_t* src_slices[1] = { output.data_ptr<uint8_t>() };
-        int src_stride[1] = { static_cast<int>(output.size(1) * 3) };
-
-        int res = sws_scale(sws_ctx, src_slices, src_stride, 0, output.size(0), frame_yuv->data, frame_yuv->linesize);
-        if (res <= 0) {
-            std::cerr << "Error: sws_scale failed with result " << res << std::endl;
-            break;
-        }
-
-        frame_yuv->pts = interpolated_pts;
-
-        int ret = avcodec_send_frame(enc_ctx, frame_yuv);
-        if (ret == AVERROR(EAGAIN)) {
-            AVPacket pkt;
-            av_init_packet(&pkt);
-            pkt.data = nullptr;
-            pkt.size = 0;
-
-            while (avcodec_receive_packet(enc_ctx, &pkt) == 0) {
-                pkt.stream_index = video_stream->index;
-                av_packet_rescale_ts(&pkt, enc_ctx->time_base, video_stream->time_base);
-                std::cout << "Encoded packet PTS: " << pkt.pts << ", DTS: " << pkt.dts << std::endl;
-                if (av_write_frame(fmt_ctx, &pkt) < 0) {
-                    std::cerr << "Error writing packet to output file!" << std::endl;
-                    av_packet_unref(&pkt);
-                    break;
-                }
-                av_packet_unref(&pkt);
-            }
-
-            ret = avcodec_send_frame(enc_ctx, frame_yuv);
-        }
-
-        if (ret < 0) {
-            std::cerr << "Error sending frame to encoder!" << std::endl;
-            break;
-        }
-
-        AVPacket pkt;
-        av_init_packet(&pkt);
-        pkt.data = nullptr;
-        pkt.size = 0;
-
-        while (avcodec_receive_packet(enc_ctx, &pkt) == 0) {
-            pkt.stream_index = video_stream->index;
-            av_packet_rescale_ts(&pkt, enc_ctx->time_base, video_stream->time_base);
-            std::cout << "Final encoded packet PTS: " << pkt.pts << ", DTS: " << pkt.dts << std::endl;
-            if (av_write_frame(fmt_ctx, &pkt) < 0) {
-                std::cerr << "Error writing packet to output file!" << std::endl;
-                av_packet_unref(&pkt);
-                break;
-            }
-            av_packet_unref(&pkt);
-        }
+    if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
+        std::cerr << "Error during TensorRT inference!" << std::endl;
+        return cv::Mat();
     }
 
-    useI0AsSource = !useI0AsSource;
-}
+    cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 
+    // Convert the output tensor to an OpenCV image format (BGR).
+    at::Tensor outputTensor = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8).to(torch::kCPU).contiguous();
+    cv::Mat interpolatedFrame(outputTensor.size(0), outputTensor.size(1), CV_8UC3, outputTensor.data_ptr());
+
+    // Convert back to BGR format for OpenCV.
+    cv::cvtColor(interpolatedFrame, interpolatedFrame, cv::COLOR_RGB2BGR);
+
+    // Flip the source buffer flag for the next run.
+    useI0AsSource = !useI0AsSource;
+
+    return interpolatedFrame;
+}

@@ -9,10 +9,10 @@ if(WIN32)
     set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch" CACHE PATH "Path to Torch directory")
     set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" CACHE PATH "Path to CUDA Toolkit directory")
     set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
-    set(FFMPEG_DIR "C:/Users/tjerf/vcpkg/installed/x64-windows" CACHE PATH "Path to FFmpeg installation directory")
+    set(VCPKG_DIR "C:/Users/tjerf/vcpkg/installed/x64-windows" CACHE PATH "Path to VCPKG_DIR installation directory")
 
     # Add vcpkg to CMAKE_PREFIX_PATH
-    set(CMAKE_PREFIX_PATH "${Torch_DIR};${TENSORRT_DIR};${FFMPEG_DIR}")
+    set(CMAKE_PREFIX_PATH "${Torch_DIR};${TENSORRT_DIR};${VCPKG_DIR}")
 endif()
 
 # Platform-specific options
@@ -43,12 +43,11 @@ endif()
 # Find Torch
 find_package(Torch REQUIRED)
 
-# Manually set FFmpeg includes and libraries
-include_directories(${FFMPEG_DIR}/include)
-link_directories(${FFMPEG_DIR}/lib)
+# Find OpenCV
+find_package(OpenCV REQUIRED)
 
 # Include directories
-include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ ${TENSORRT_DIR}/include)
+include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} include/ src/ ${TENSORRT_DIR}/include)
 
 # Source files location
 set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp)
@@ -61,7 +60,7 @@ if(WIN32)
     target_link_libraries(RifeTensorRT 
         ${CUDA_LIBRARIES}
         ${TORCH_LIBRARIES}
-        avcodec avformat avutil swscale  # FFmpeg libraries
+        ${OpenCV_LIBS}
         protobuf::libprotobuf
         protobuf::libprotobuf-lite
         protobuf::libprotoc
@@ -73,7 +72,7 @@ elseif(UNIX)
     target_link_libraries(RifeTensorRT 
         ${CUDA_LIBRARIES}
         ${TORCH_LIBRARIES}
-        avcodec avformat avutil swscale  # FFmpeg libraries
+        ${OpenCV_LIBS}
         protobuf::libprotobuf
         ${TENSORRT_DIR}/lib/libnvinfer${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvinfer_plugin${LIB_SUFFIX}
