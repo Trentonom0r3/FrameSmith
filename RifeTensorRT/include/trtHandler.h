@@ -43,7 +43,7 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
     const std::vector<int>& inputsOpt,
     const std::vector<int>& inputsMax,
     const std::string& inputName = "input",
-    size_t maxWorkspaceSize = (1 << 30),
+    size_t maxWorkspaceSize = 0,
     int optimizationLevel = 3
 ) {
     // Create the builder
@@ -83,7 +83,7 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
         return { nullptr, nullptr };
     }
     config->addOptimizationProfile(profile);
-    config->setMemoryPoolLimit(MemoryPoolType::kWORKSPACE, maxWorkspaceSize);
+    config->setMemoryPoolLimit(MemoryPoolType::kWORKSPACE, maxWorkspaceSize > 0 ? maxWorkspaceSize : config->getMemoryPoolLimit(MemoryPoolType::kWORKSPACE));
 
     if (fp16) {
         config->setFlag(BuilderFlag::kFP16);
@@ -125,6 +125,14 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
         std::cerr << red("Failed to create TensorRT Execution Context") << std::endl;
         return { nullptr, nullptr };
     }
+    delete builder;
+    delete network;
+    delete parser;
+    delete config;
+    delete serializedEngine;
+    delete runtime;
+    delete engine;
+    delete context;
 
     return { engine, context };
 }

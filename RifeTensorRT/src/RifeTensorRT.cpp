@@ -4,12 +4,22 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
-#include <c10/cuda/CUDAStream.h> 
+#include <c10/cuda/CUDAStream.h>
 #include <trtHandler.h>
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
 
+nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
+    nvinfer1::Dims dims;
+    dims.nbDims = sizes.size();
+    for (int i = 0; i < dims.nbDims; ++i) {
+        dims.d[i] = sizes[i];
 
+    }
+    return dims;
+}
+
+// Constructor: Initializes the TensorRT RIFE model
 RifeTensorRT::RifeTensorRT(
     std::string interpolateMethod,
     int interpolateFactor,
@@ -25,8 +35,10 @@ half(half),
 ensemble(ensemble),
 firstRun(true),
 useI0AsSource(true),
+isFrameCached(false), // Initialize caching flag
 device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-stream(c10::cuda::getStreamFromPool(false, device.index()))
+stream(c10::cuda::getStreamFromPool(false, device.index())),
+cachedInterpolatedAVFrame(nullptr)
 {
     if (width > 1920 && height > 1080 && half) {
         std::cout << "UHD and fp16 are not compatible with RIFE, defaulting to fp32" << std::endl;
@@ -36,25 +48,7 @@ stream(c10::cuda::getStreamFromPool(false, device.index()))
     handleModel();
 }
 
-void RifeTensorRT::cacheFrame() {
-    I0.copy_(I1, true);
-}
-
-void RifeTensorRT::cacheFrameReset(const at::Tensor& frame) {
-    I0.copy_(processFrame(frame), true);
-    useI0AsSource = true;
-}
-
-nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
-    nvinfer1::Dims dims;
-    dims.nbDims = sizes.size();
-    for (int i = 0; i < dims.nbDims; ++i) {
-        dims.d[i] = sizes[i];
-
-    }
-    return dims;
-}
-
+// Method to handle model loading and initialization
 void RifeTensorRT::handleModel() {
     std::string filename = modelsMap(interpolateMethod, "onnx", half, ensemble);
     std::string folderName = interpolateMethod;
@@ -71,8 +65,6 @@ void RifeTensorRT::handleModel() {
         }
     }
 
-    bool isCudnnEnabled = torch::cuda::cudnn_is_available();
-
     enginePath = TensorRTEngineNameHandler(modelPath.string(), half, { 1, 7, height, width });
     std::tie(engine, context) = TensorRTEngineLoader(enginePath);
 
@@ -87,7 +79,7 @@ void RifeTensorRT::handleModel() {
     dType = half ? torch::kFloat16 : torch::kFloat32;
     I0 = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     I1 = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-    dummyInput = torch::empty({ 1, 7, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    dummyInput = torch::zeros({ 1, 7, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     dummyOutput = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
 
     bindings = { dummyInput.data_ptr(), dummyOutput.data_ptr() };
@@ -113,70 +105,74 @@ void RifeTensorRT::handleModel() {
     useI0AsSource = true;
 }
 
+// Preprocess frame and convert it to Torch tensor
 at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
     try {
-        // Ensure the frame is properly normalized
-        auto processed = frame.to(device, dType, /*non_blocking=*/false, /*copy=*/true)
-            .permute({ 0, 3, 1, 2 })  // Change the order of the dimensions: from NHWC to NCHW
+        auto processed = frame.to(dType, /*non_blocking=*/true, /*copy=*/true)
+            .permute({ 0, 3, 1, 2 })  // NHWC to NCHW
             .div(255.0)               // Normalize to [0, 1]
             .contiguous();
-
         return processed;
     }
     catch (const c10::Error& e) {
         std::cerr << "Error during processFrame: " << e.what() << std::endl;
-        std::cerr << "Frame dimensions: " << frame.sizes() << " Frame dtype: " << frame.dtype() << std::endl;
-        throw; // Re-throw the error after logging
+        throw; // Re-throw after logging
     }
 }
 
-
-cv::Mat RifeTensorRT::run(const cv::Mat& frame) {
-    // Ensure the CUDA stream guard is in place.
+// Run inference on an input frame and return the interpolated result asynchronously
+AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEvent_t& inferenceFinishedEvent) {
+    // Get raw CUDA stream from torch::cuda::CUDAStream for asynchronous execution.
     c10::cuda::CUDAStreamGuard guard(stream);
+    cudaStream_t raw_stream = stream.stream();
 
-    // Convert OpenCV's BGR image format to RGB for processing.
-    cv::Mat rgbFrame;
-    cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
+    // Ensure the AVFrame is writable before modifying it.
+    if (av_frame_make_writable(rgbFrame) < 0) {
+        std::cerr << "Cannot make AVFrame writable!" << std::endl;
+        return nullptr;
+    }
 
-    // Convert the RGB image to a tensor.
-    at::Tensor inputTensor = torch::from_blob(rgbFrame.data, { 1, rgbFrame.rows, rgbFrame.cols, 3 }, torch::kByte).to(torch::kCUDA);
+    // Convert AVFrame to Torch tensor (assuming interleaved RGB format).
+    at::Tensor inputTensor = AVFrameToTensor(rgbFrame);
 
     if (firstRun) {
         // On the first run, initialize the source frame.
         I0.copy_(processFrame(inputTensor), true);
         firstRun = false;
-        return cv::Mat();
+        interpolatedFrame = rgbFrame;
+        return interpolatedFrame;
     }
 
-    // Toggle between source and destination buffers.
+    // Use the source and destination buffers for double-buffering.
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
+
+    // Copy the input frame to the destination buffer.
     destination.copy_(processFrame(inputTensor), true);
 
-    // Perform the interpolation.
+    // Create a tensor for the interpolation timestep
     at::Tensor timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+
+    // Prepare the input tensor for the interpolation (concatenating source, destination, and timestep)
     dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
 
+    // Set the input and output tensor addresses in the TensorRT context
     context->setTensorAddress("input", dummyInput.data_ptr());
     context->setTensorAddress("output", dummyOutput.data_ptr());
 
-    if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
+    // Enqueue the inference on the raw CUDA stream (asynchronously)
+    if (!context->enqueueV3(raw_stream)) {
         std::cerr << "Error during TensorRT inference!" << std::endl;
-        return cv::Mat();
+        return nullptr;
     }
 
-    cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
-
-    // Convert the output tensor to an OpenCV image format (BGR).
-    at::Tensor outputTensor = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8).to(torch::kCPU).contiguous();
-    cv::Mat interpolatedFrame(outputTensor.size(0), outputTensor.size(1), CV_8UC3, outputTensor.data_ptr());
-
-    // Convert back to BGR format for OpenCV.
-    cv::cvtColor(interpolatedFrame, interpolatedFrame, cv::COLOR_RGB2BGR);
+    // Record an event to notify when inference has completed
+    cudaEventRecord(inferenceFinishedEvent, raw_stream);
 
     // Flip the source buffer flag for the next run.
     useI0AsSource = !useI0AsSource;
 
+    // Return the interpolated frame
     return interpolatedFrame;
 }
+
