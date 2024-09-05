@@ -51,7 +51,6 @@ FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int hei
         std::cerr << "Error finding NVENC codec." << std::endl;
         return;
     }
-
     codecCtx = avcodec_alloc_context3(codec);
     codecCtx->codec_id = codec->id;
     codecCtx->width = width;
@@ -187,7 +186,6 @@ void FFmpegWriter::finalize() {
             packet->dts = packet->pts;
             packet->duration = av_rescale_q(packet->duration, codecCtx->time_base, stream->time_base);
             packet->stream_index = stream->index;
-
             av_interleaved_write_frame(formatCtx, packet);
             av_packet_unref(packet);
         }

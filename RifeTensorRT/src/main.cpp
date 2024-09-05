@@ -1,3 +1,6 @@
+
+#include "RifeTensorRT.h"
+
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -76,9 +79,10 @@ int main(int argc, char** argv) {
 
     writer.finalize();  // Finalize the writer to close the output file
 
+    // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
-    double processingFPS = frameCount / duration.count();
+    double processingFPS = frameCount * 2 / duration.count();
 
     std::cout << "Processed " << frameCount << " frames in " << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;

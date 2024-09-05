@@ -14,7 +14,6 @@
 #include <queue>
 #include <thread>
 
-#include <mutex>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -65,7 +64,6 @@ public:
         frame->format = format;
         frame->width = width;
         frame->height = height;
-
         // Allocate frame buffer for storing the image data
         if (av_frame_get_buffer(frame, 0) < 0) {
             std::cerr << "Could not allocate AVFrame buffer!" << std::endl;
