@@ -108,8 +108,10 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
 
     // Create execution context
     IExecutionContext* context = engine->createExecutionContext();
-    return { engine, context };
-}
+    if (!context) {
+        std::cerr << red("Failed to create TensorRT Execution Context") << std::endl;
+        return { nullptr, nullptr };
+    }
 
 
 std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineLoader(const std::string& enginePath) {

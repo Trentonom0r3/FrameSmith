@@ -10,6 +10,16 @@
 #include <fstream>
 #include <c10/cuda/CUDAGuard.h>
 
+nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
+    nvinfer1::Dims dims;
+    dims.nbDims = sizes.size();
+    for (int i = 0; i < dims.nbDims; ++i) {
+        dims.d[i] = sizes[i];
+    }
+    return dims;
+}
+
+// Constructor: Initializes the TensorRT RIFE model
 RifeTensorRT::RifeTensorRT(
     std::string interpolateMethod,
     int interpolateFactor,
@@ -89,10 +99,13 @@ void RifeTensorRT::handleModel() {
 
     // Setup Torch tensors for input/output
     dType = half ? torch::kFloat16 : torch::kFloat32;
-    I0 = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-    I1 = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-    dummyInput = torch::empty({ 1, 7, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-    dummyOutput = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    int paddedWidth = ((width + 7) / 8) * 8;
+    int paddedHeight = ((height + 7) / 8) * 8;
+
+    I0 = torch::zeros({ 1, 3, paddedHeight, paddedWidth }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    I1 = torch::zeros({ 1, 3, paddedHeight, paddedWidth }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    dummyInput = torch::zeros({ 1, 7, paddedHeight, paddedWidth }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    dummyOutput = torch::zeros({ 1, 3, paddedHeight, paddedWidth }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
 
     bindings = { dummyInput.data_ptr(), dummyOutput.data_ptr() };
 
@@ -126,11 +139,19 @@ at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
     return processed;
 }
 
-void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, cv::VideoWriter& writer) {
+// Run inference on an input frame and return the interpolated result asynchronously
+AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEvent_t& inferenceFinishedEvent) {
     c10::cuda::CUDAStreamGuard guard(stream);
 
+    if (av_frame_make_writable(rgbFrame) < 0) {
+        std::cerr << "Cannot make AVFrame writable!" << std::endl;
+        return nullptr;
+    }
+
+    at::Tensor inputTensor = AVFrameToTensor(rgbFrame);
+
     if (firstRun) {
-        I0.copy_(processFrame(frame), true); // No need to normalize again here
+        I0.copy_(processFrame(inputTensor), true);
         firstRun = false;
         return;
     }
@@ -139,48 +160,23 @@ void RifeTensorRT::run(const at::Tensor& frame, bool benchmark, cv::VideoWriter&
     auto& destination = useI0AsSource ? I1 : I0;
     destination.copy_(processFrame(frame), true); // Normalize the frame by dividing by 255.0
 
-    for (int i = 0; i < interpolateFactor - 1; ++i) {
-        at::Tensor timestep = torch::full({ 1, 1, height, width },
-            (i + 1) * 1.0 / interpolateFactor,
-            torch::TensorOptions().dtype(dType).device(device)).contiguous();
+    destination.copy_(processFrame(inputTensor), true);
 
-        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true).contiguous();
+    at::Tensor timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
 
-        // Bind input and output tensors to the context
-        context->setTensorAddress("input", dummyInput.data_ptr());
-        context->setTensorAddress("output", dummyOutput.data_ptr());
+    dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
 
-        // Execute TensorRT inference
-        if (!context->enqueueV3(static_cast<cudaStream_t>(stream))) {
-            std::cerr << "Error during TensorRT inference!" << std::endl;
-            return;
-        }
-        cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
+    context->setTensorAddress("input", dummyInput.data_ptr());
+    context->setTensorAddress("output", dummyOutput.data_ptr());
 
-        // Convert output tensor to CPU and ensure it has the correct dimensions
-        at::Tensor output = dummyOutput.squeeze(0)
-            .permute({ 1, 2, 0 }) // CHW to HWC
-            .mul(255.0)
-            .clamp(0, 255)
-            .to(torch::kU8)
-            .to(torch::kCPU); // Multiply back to the range [0, 255] and convert to 8-bit
-
-        // Make sure the output tensor is contiguous
-        output = output.contiguous();
-
-        // Initialize OpenCV matrix as a 3-channel image
-        cv::Mat outputFrame(height, width, CV_8UC3);
-        std::memcpy(outputFrame.data, output.data_ptr(), output.nbytes());
-
-        // Check if the frame has valid data
-        if (!outputFrame.empty()) {
-            writer.write(outputFrame);
-        }
-        else {
-            std::cerr << "Output frame is empty!" << std::endl;
-        }
+    if (!context->enqueueV3(raw_stream)) {
+        std::cerr << "Error during TensorRT inference!" << std::endl;
+        return nullptr;
     }
 
-    useI0AsSource = !useI0AsSource;
-}
+    cudaEventRecord(inferenceFinishedEvent, raw_stream);
 
+    useI0AsSource = !useI0AsSource;
+
+    return interpolatedFrame;
+}

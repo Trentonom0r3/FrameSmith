@@ -1,40 +1,69 @@
-#include "RifeTensorRT.h"
-#include <opencv2/opencv.hpp>
-#include <algorithm>
-#include <chrono>
 #include <iostream>
 #include <string>
-#include <vector>
-#include <downloadmodels.h>
+#include <chrono>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include "Reader.h"
+#include "Writer.h"
 
-// Function to check if the model is in the list
-bool isModelValid(const std::string& model) {
-    const auto& models = modelsList();
-    return std::find(models.begin(), models.end(), model) != models.end();
+std::queue<AVFrame*> frameQueue;
+std::mutex mtx;
+std::condition_variable cv;
+std::atomic<bool> doneReading(false);
+
+void readFrames(FFmpegReader& reader) {
+    AVFrame* preAllocatedInputFrame = av_frame_alloc();
+    int frameIndex = 0;  // Keep track of frames being read
+    while (reader.readFrame(preAllocatedInputFrame)) {
+        if (preAllocatedInputFrame && preAllocatedInputFrame->data[0]) {
+            std::cout << "Read and transferred frame " << frameIndex << " - pushing to queue" << std::endl;
+            std::unique_lock<std::mutex> lock(mtx);
+            frameQueue.push(av_frame_clone(preAllocatedInputFrame));  // Clone the input frame to preserve original
+            lock.unlock();
+            cv.notify_one();
+            frameIndex++;
+        }
+        else {
+            std::cerr << "Error reading or transferring frame " << frameIndex << std::endl;
+        }
+    }
+    std::cout << "Finished reading all frames. Total frames read: " << frameIndex << std::endl;
+    doneReading = true;
+    cv.notify_all();
 }
 
-int main(int argc, char** argv) {
-    // Check for proper command-line argument usage
-    if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <input_video_path> <output_video_path> <model_name>" << std::endl;
-        return -1;
-    }
 
-    // Load video using OpenCV
-    std::string inputVideoPath = argv[1];
-    std::string outputVideoPath = argv[2];
-    std::string modelName = argv[3]; // Model name is now passed as the third argument
+void processFrames(int& frameCount, FFmpegWriter& writer) {
+    while (true) {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [] { return !frameQueue.empty() || doneReading; });
 
-    // Check if the model is valid
-    if (!isModelValid(modelName)) {
-        std::cerr << "Invalid model name: " << modelName << std::endl;
-        std::cerr << "Please choose from the following models:" << std::endl;
-        const auto& models = modelsList();
-        for (const auto& model : models) {
-            std::cerr << " - " << model << std::endl;
+        if (frameQueue.empty() && doneReading) {
+            std::cout << "No more frames to process, exiting..." << std::endl;
+            break;  // Exit when no more frames
         }
-        return -1;
+
+        AVFrame* frame = frameQueue.front();
+        frameQueue.pop();
+        lock.unlock();
+
+        if (!frame || !frame->data[0]) {
+            std::cerr << "Invalid input frame or frame has no data." << std::endl;
+            continue;
+        }
+
+        std::cout << "Processing frame " << frameCount << std::endl;
+        writer.addFrame(frame);  // Write the frame directly to the writer
+        frameCount++;  // Increment the frame count
+
+        av_frame_free(&frame);  // Free the frame after processing
     }
+
+    std::cout << "Processed " << frameCount << " frames." << std::endl;
+}
+
 
     cv::VideoCapture cap(inputVideoPath);
     if (!cap.isOpened()) {
@@ -48,33 +77,32 @@ int main(int argc, char** argv) {
     int height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
     double fps = cap.get(cv::CAP_PROP_FPS);
 
-    RifeTensorRT rife(modelName, 2, width, height, true, false);
+    FFmpegReader reader(inputVideoPath);
+    int width = reader.getWidth();
+    int height = reader.getHeight();
+    double fps = reader.getFPS();
 
-    int codec = cv::VideoWriter::fourcc('H', '2', '6', '4');
-    cv::VideoWriter writer(outputVideoPath, codec, fps, cv::Size(width, height), true);
-
-    if (!writer.isOpened()) {
-        std::cerr << "Failed to open video writer!" << std::endl;
-        return 1;
-    }
+    FFmpegWriter writer(outputVideoPath, width, height, fps);  // No need for doubled FPS
 
     cv::Mat frame;
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
-    std::cout << "Processing video..." << std::endl;
-    while (cap.read(frame)) {
-        at::Tensor tensorFrame = torch::from_blob(frame.data, { frame.rows, frame.cols, 3 }, torch::kByte);
-        rife.run(tensorFrame, false, writer);
+    // Thread for reading frames
+    std::thread readerThread(readFrames, std::ref(reader));
 
-        frameCount++;
-    }
+    // Thread for processing (just writing frames here)
+    std::thread processorThread(processFrames, std::ref(frameCount), std::ref(writer));
+
+    readerThread.join();
+    processorThread.join();
+
+    writer.finalize();  // Finalize the writer to close the file
 
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
     double processingFPS = frameCount / duration.count();
 
-    std::cout << "Processing completed." << std::endl;
     std::cout << "Processed " << frameCount << " frames in " << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
