@@ -5,99 +5,76 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include "Reader.h"
-#include "Writer.h"
+#include <torch/torch.h>  // Include PyTorch for tensor handling
+#include "Reader.h"  // Updated reader header using tensors
+#include "Writer.h"  // Updated writer header using tensors
 
-std::queue<AVFrame*> frameQueue;
+std::queue<torch::Tensor> frameQueue;
 std::mutex mtx;
 std::condition_variable cv;
 std::atomic<bool> doneReading(false);
 
+// Function for reading frames into a tensor queue
 void readFrames(FFmpegReader& reader) {
-    AVFrame* preAllocatedInputFrame = av_frame_alloc();
-    int frameIndex = 0;  // Keep track of frames being read
-    while (reader.readFrame(preAllocatedInputFrame)) {
-        if (preAllocatedInputFrame && preAllocatedInputFrame->data[0]) {
-            std::cout << "Read and transferred frame " << frameIndex << " - pushing to queue" << std::endl;
-            std::unique_lock<std::mutex> lock(mtx);
-            frameQueue.push(av_frame_clone(preAllocatedInputFrame));  // Clone the input frame to preserve original
-            lock.unlock();
-            cv.notify_one();
-            frameIndex++;
-        }
-        else {
-            std::cerr << "Error reading or transferring frame " << frameIndex << std::endl;
-        }
+    torch::Tensor preAllocatedInputTensor;  // GPU tensor
+    while (reader.readFrame(preAllocatedInputTensor)) {  // Updated to read into tensor
+        std::unique_lock<std::mutex> lock(mtx);
+        frameQueue.push(preAllocatedInputTensor.clone());  // Clone tensor to preserve original
+        lock.unlock();
+        cv.notify_one();
     }
-    std::cout << "Finished reading all frames. Total frames read: " << frameIndex << std::endl;
     doneReading = true;
     cv.notify_all();
 }
 
-
+// Function for processing (writing) frames from the tensor queue
 void processFrames(int& frameCount, FFmpegWriter& writer) {
     while (true) {
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [] { return !frameQueue.empty() || doneReading; });
 
-        if (frameQueue.empty() && doneReading) {
-            std::cout << "No more frames to process, exiting..." << std::endl;
-            break;  // Exit when no more frames
-        }
+        if (frameQueue.empty() && doneReading) break;  // Exit when no more frames
 
-        AVFrame* frame = frameQueue.front();
+        torch::Tensor tensor = frameQueue.front();
         frameQueue.pop();
         lock.unlock();
 
-        if (!frame || !frame->data[0]) {
-            std::cerr << "Invalid input frame or frame has no data." << std::endl;
-            continue;
-        }
-
-        std::cout << "Processing frame " << frameCount << std::endl;
-        writer.addFrame(frame);  // Write the frame directly to the writer
+        writer.addFrame(tensor);  // Write tensor directly to the writer
         frameCount++;  // Increment the frame count
-
-        av_frame_free(&frame);  // Free the frame after processing
     }
-
-    std::cout << "Processed " << frameCount << " frames." << std::endl;
 }
 
-
-    cv::VideoCapture cap(inputVideoPath);
-    if (!cap.isOpened()) {
-        std::cerr << "Error opening video file: " << inputVideoPath << std::endl;
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <input_video_path> <output_video_path>" << std::endl;
         return -1;
     }
-    std::cout << "Video file opened successfully." << std::endl;
 
-    // Create RifeTensorRT instance with the model name
-    int width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-    int height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-    double fps = cap.get(cv::CAP_PROP_FPS);
+    std::string inputVideoPath = argv[1];
+    std::string outputVideoPath = argv[2];
 
+    // Initialize FFmpeg reader and writer
     FFmpegReader reader(inputVideoPath);
     int width = reader.getWidth();
     int height = reader.getHeight();
     double fps = reader.getFPS();
 
-    FFmpegWriter writer(outputVideoPath, width, height, fps);  // No need for doubled FPS
+    FFmpegWriter writer(outputVideoPath, width, height, fps);
 
-    cv::Mat frame;
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
-    // Thread for reading frames
+    // Thread for reading frames into tensors
     std::thread readerThread(readFrames, std::ref(reader));
 
-    // Thread for processing (just writing frames here)
+    // Thread for processing (writing frames from tensors)
     std::thread processorThread(processFrames, std::ref(frameCount), std::ref(writer));
 
+    // Wait for both threads to finish
     readerThread.join();
     processorThread.join();
 
-    writer.finalize();  // Finalize the writer to close the file
+    writer.finalize();  // Finalize the writer to close the output file
 
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
@@ -106,7 +83,5 @@ void processFrames(int& frameCount, FFmpegWriter& writer) {
     std::cout << "Processed " << frameCount << " frames in " << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
-    writer.release();
-    cap.release();
     return 0;
 }
