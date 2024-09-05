@@ -1,4 +1,6 @@
+
 #include "RifeTensorRT.h"
+
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -6,19 +8,21 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include "Reader.h"
-#include "Writer.h"  // Your FFmpegWriter class
+#include <torch/torch.h>  // Include PyTorch for tensor handling
+#include "Reader.h"  // Updated reader header using tensors
+#include "Writer.h"  // Updated writer header using tensors
 
-std::queue<AVFrame*> frameQueue;
+std::queue<torch::Tensor> frameQueue;
 std::mutex mtx;
 std::condition_variable cv;
 std::atomic<bool> doneReading(false);
 
+// Function for reading frames into a tensor queue
 void readFrames(FFmpegReader& reader) {
-    AVFrame* preAllocatedInputFrame = av_frame_alloc();
-    while (reader.readFrame(preAllocatedInputFrame)) {
+    torch::Tensor preAllocatedInputTensor;  // GPU tensor
+    while (reader.readFrame(preAllocatedInputTensor)) {  // Updated to read into tensor
         std::unique_lock<std::mutex> lock(mtx);
-        frameQueue.push(av_frame_clone(preAllocatedInputFrame));  // Clone frame
+        frameQueue.push(preAllocatedInputTensor.clone());  // Clone tensor to preserve original
         lock.unlock();
         cv.notify_one();
     }
@@ -26,61 +30,21 @@ void readFrames(FFmpegReader& reader) {
     cv.notify_all();
 }
 
-void processFrames(int& frameCount, FFmpegWriter& writer, RifeTensorRT& rifeTensorRT) {
-    AVFrame* interpolatedFrame = av_frame_alloc();  // Reuse this frame
-    cudaEvent_t inferenceFinishedEvent;
-    cudaEventCreate(&inferenceFinishedEvent);  // Create a CUDA event
-
-    c10::cuda::CUDAStream processStream = c10::cuda::getStreamFromPool();
-    c10::cuda::CUDAStream writeStream = c10::cuda::getStreamFromPool();
-
+// Function for processing (writing) frames from the tensor queue
+void processFrames(int& frameCount, FFmpegWriter& writer) {
     while (true) {
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [] { return !frameQueue.empty() || doneReading; });
 
-        if (frameQueue.empty() && doneReading) break;
+        if (frameQueue.empty() && doneReading) break;  // Exit when no more frames
 
-        AVFrame* frame = frameQueue.front();
+        torch::Tensor tensor = frameQueue.front();
         frameQueue.pop();
         lock.unlock();
 
-        if (!frame || !frame->data[0]) {
-            std::cerr << "Invalid input frame." << std::endl;
-            continue;
-        }
-
-        // Perform RIFE interpolation asynchronously
-        rifeTensorRT.run(frame, interpolatedFrame, inferenceFinishedEvent);
-
-        // Synchronize the event to ensure inference has completed before copying the data
-        cudaEventSynchronize(inferenceFinishedEvent);
-
-        // Convert the output tensor to an AVFrame format (after inference has finished)
-        at::Tensor outputTensor = rifeTensorRT.dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8).to(torch::kCPU).contiguous();
-
-        // Ensure interpolatedFrame is allocated properly
-        interpolatedFrame->format = frame->format;
-        interpolatedFrame->width = outputTensor.size(1);
-        interpolatedFrame->height = outputTensor.size(0);
-
-        // Allocate memory for interpolatedFrame data
-        if (av_frame_get_buffer(interpolatedFrame, 0) < 0) {
-            std::cerr << "Error allocating buffer for interpolated frame!" << std::endl;
-        }
-
-        // Copy the output tensor data back to AVFrame (this is crucial and was missing).
-        memcpy(interpolatedFrame->data[0], outputTensor.data_ptr(), outputTensor.numel());
-
-        // Add to writer queue (optional)
-        //writer.addFrame(frame);
-        //writer.addFrame(interpolatedFrame);
-
-        frameCount++;
-        av_frame_free(&frame);  // Free input frame
+        writer.addFrame(tensor);  // Write tensor directly to the writer
+        frameCount++;  // Increment the frame count
     }
-
-    av_frame_free(&interpolatedFrame);  // Free interpolated frame
-    cudaEventDestroy(inferenceFinishedEvent);  // Cleanup
 }
 
 int main(int argc, char** argv) {
@@ -92,38 +56,35 @@ int main(int argc, char** argv) {
     std::string inputVideoPath = argv[1];
     std::string outputVideoPath = argv[2];
 
-    // Initialize FFmpeg-based video reader
+    // Initialize FFmpeg reader and writer
     FFmpegReader reader(inputVideoPath);
     int width = reader.getWidth();
     int height = reader.getHeight();
     double fps = reader.getFPS();
 
-    // Initialize RifeTensorRT
-    RifeTensorRT rifeTensorRT("rife4.20-tensorrt", 2, width, height, true, false);
-
-    // Initialize FFmpeg-based video writer
-    FFmpegWriter writer(outputVideoPath, width, height, fps * 2);
+    FFmpegWriter writer(outputVideoPath, width, height, fps);
 
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
-    // Create threads for reading and processing frames
+    // Thread for reading frames into tensors
     std::thread readerThread(readFrames, std::ref(reader));
-    std::thread processorThread(processFrames, std::ref(frameCount), std::ref(writer), std::ref(rifeTensorRT));
 
-    // Join the threads after work is done
+    // Thread for processing (writing frames from tensors)
+    std::thread processorThread(processFrames, std::ref(frameCount), std::ref(writer));
+
+    // Wait for both threads to finish
     readerThread.join();
     processorThread.join();
 
-    // Finalize the writer
-    writer.finalize();
+    writer.finalize();  // Finalize the writer to close the output file
 
     // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
     double processingFPS = frameCount * 2 / duration.count();
 
-    std::cout << "Processed " << frameCount * 2 << " frames in " << duration.count() << " seconds." << std::endl;
+    std::cout << "Processed " << frameCount << " frames in " << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
     return 0;

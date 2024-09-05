@@ -175,4 +175,3 @@ AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEv
     // Return the interpolated frame
     return interpolatedFrame;
 }
-

@@ -17,8 +17,7 @@ namespace fs = std::filesystem;
 class Logger : public ILogger {
 public:
     void log(Severity severity, const char* msg) noexcept override {
-     
-         if (severity == Severity::kINFO) {
+        if (severity == Severity::kINFO) {
             std::cerr << cyan("[TensorRT INFO] ") << msg << std::endl;
         }
         else if (severity == Severity::kWARNING) {
@@ -76,7 +75,6 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
     bool b1 = profile->setDimensions(inputName.c_str(), OptProfileSelector::kMIN, Dims4{ 1, 7, inputsMin[2], inputsMin[3] });
     bool b2 = profile->setDimensions(inputName.c_str(), OptProfileSelector::kOPT, Dims4{ 1, 7, inputsOpt[2], inputsOpt[3] });
     bool b3 = profile->setDimensions(inputName.c_str(), OptProfileSelector::kMAX, Dims4{ 1, 7, inputsMax[2], inputsMax[3] });
-    
     IBuilderConfig* config = builder->createBuilderConfig();
     if (!config) {
         std::cerr << red("Failed to create TensorRT Builder Config") << std::endl;
@@ -89,13 +87,13 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
         config->setFlag(BuilderFlag::kFP16);
     }
 
-    
     IHostMemory* serializedEngine = builder->buildSerializedNetwork(*network, *config);
     if (!serializedEngine) {
         std::cerr << red("Failed to serialize TensorRT Engine") << std::endl;
         return { nullptr, nullptr };
     }
   
+
 
     std::ofstream engineFile(enginePath, std::ios::binary);
     if (!engineFile) {
@@ -106,12 +104,14 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
     engineFile.close();
    
 
+
     IRuntime* runtime = createInferRuntime(gLogger);
     if (!runtime) {
         std::cerr << red("Failed to create TensorRT Runtime") << std::endl;
         return { nullptr, nullptr };
     }
     
+
 
     ICudaEngine* engine = runtime->deserializeCudaEngine(serializedEngine->data(), serializedEngine->size());
     if (!engine) {
@@ -125,14 +125,6 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
         std::cerr << red("Failed to create TensorRT Execution Context") << std::endl;
         return { nullptr, nullptr };
     }
-    delete builder;
-    delete network;
-    delete parser;
-    delete config;
-    delete serializedEngine;
-    delete runtime;
-    delete engine;
-    delete context;
 
     return { engine, context };
 }
