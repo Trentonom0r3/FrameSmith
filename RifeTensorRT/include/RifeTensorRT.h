@@ -1,11 +1,19 @@
-#ifndef RIFETENSORRT_H
-#define RIFETENSORRT_H
+
 #pragma once
 #include <torch/torch.h>
 #include <torch/cuda.h>
 #include <NvInfer.h>
 #include <fstream>
 #include <c10/cuda/CUDAStream.h> // Ensure correct include for CUDAStream
+#include <trtHandler.h>
+#include <downloadmodels.h>
+
+#include <iostream>
+#include <string>
+#include <chrono>
+#include <queue>
+#include <thread>
+
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -57,7 +65,6 @@ public:
         frame->format = format;
         frame->width = width;
         frame->height = height;
-
         // Allocate frame buffer for storing the image data
         if (av_frame_get_buffer(frame, 0) < 0) {
             std::cerr << "Could not allocate AVFrame buffer!" << std::endl;
@@ -105,5 +112,3 @@ public:
 
 
 };
-
-#endif
