@@ -1,9 +1,16 @@
-
 # RifeTensorRT
 
 ## Overview
 
-RifeTensorRT is a C++ application that uses TensorRT for fast, high-performance video frame interpolation. The project is cross-platform and can be built on both Windows and Linux using CMake.
+RifeTensorRT is a high-performance C++ application for video frame interpolation using TensorRT and CUDA. The project leverages TensorRT for accelerated deep learning-based frame interpolation and utilizes FFmpeg for handling video input/output, including support for CUDA/NVENC acceleration. The application supports both Windows and Linux platforms and can be easily built using CMake and vcpkg for dependency management.
+
+## Features
+
+- **TensorRT Integration**: Uses TensorRT for accelerated deep learning-based frame interpolation.
+- **Parallel Processing**: Supports asynchronous frame processing and writing using multiple CUDA streams for higher performance.
+- **CUDA/NVENC Support**: Utilizes FFmpeg with CUDA/NVENC for fast video encoding and decoding.
+- **Cross-Platform**: Can be built on both Windows and Linux using CMake.
+- **Model Support**: Works with a wide range of interpolation models, including RIFE and ShuffleSpan, with options for TensorRT, DirectML, and NCNN backends.
 
 ## Requirements
 
@@ -13,9 +20,49 @@ RifeTensorRT is a C++ application that uses TensorRT for fast, high-performance 
 - **CUDA Toolkit** (Tested with CUDA 12.1)
 - **TensorRT** (Tested with TensorRT 10.3)
 - **libtorch** (Tested with libtorch 2.4.0+cu121)
-- **OpenCV** (Tested with OpenCV 4.x)
+- **FFmpeg** (with CUDA/NVENC support, compiled via vcpkg)
 - **Protobuf** (libprotobuf, libprotobuf-lite, protoc)
-- **libcurl** ( for downloading models)
+- **libcurl** (for downloading models)
+
+### Optional Dependencies
+- **vcpkg**: For managing dependencies like `libcurl`, `FFmpeg`, and `Protobuf`.
+
+## vcpkg Dependencies
+
+The project relies on the following specific packages from vcpkg for the x64 Windows build:
+
+- **FFmpeg (7.0.2)**: Includes the `avcodec`, `avdevice`, `avformat`, `avfilter`, `swresample`, `swscale`, `nvcodec` features.
+  - `ffmpeg[avcodec]`
+  - `ffmpeg[avdevice]`
+  - `ffmpeg[avfilter]`
+  - `ffmpeg[avformat]`
+  - `ffmpeg[swresample]`
+  - `ffmpeg[swscale]`
+  - `ffmpeg[nvcodec]`: CUDA/NVENC support for video acceleration.
+
+- **libcurl (8.9.1)**: Provides HTTP/HTTPS support for downloading models.
+  - `curl[ssl]`, `curl[schannel]`, `curl[sspi]`.
+
+- **Protobuf (3.21.12)**: Required for handling serialized data.
+  - `protobuf`.
+
+- **CUDA (10.1+)**: Required for GPU acceleration.
+
+### Installing vcpkg Dependencies
+
+To install the necessary dependencies via vcpkg, use the following commands:
+
+```bash
+vcpkg install ffmpeg[avcodec,avdevice,avfilter,avformat,swresample,swscale,nvcodec]:x64-windows
+vcpkg install curl[ssl,schannel,sspi]:x64-windows
+vcpkg install protobuf:x64-windows
+```
+
+Ensure that the vcpkg toolchain file is correctly set in your CMake configuration to use the installed packages.	
+
+```bash
+set(CMAKE_TOOLCHAIN_FILE "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+```
 
 ## Building on Windows
 
@@ -51,9 +98,11 @@ RifeTensorRT is a C++ application that uses TensorRT for fast, high-performance 
 - **CUDA Toolkit**: Install using the package manager or from [NVIDIA's website](https://developer.nvidia.com/cuda-downloads).
 - **TensorRT**: Download and install from [NVIDIA's website](https://developer.nvidia.com/tensorrt).
 - **libtorch**: Download and extract the Linux package from the [PyTorch website](https://pytorch.org/get-started/locally/).
-- **OpenCV**: Install via the package manager:
+- **FFmpeg**: Ensure FFmpeg is compiled with CUDA/NVENC support or install it via the package manager:
+
+  **FFMPEG**
   ```bash
-  sudo apt-get install libopencv-dev
+  sudo apt-get install ffmpeg
   ```
 - **Protobuf**: Install via the package manager:
   ```bash
@@ -113,47 +162,7 @@ RifeTensorRT is a C++ application that uses TensorRT for fast, high-performance 
 
 You need to specify a model name when running the application. Available models include: (Note that not all are set up to work with the .exe yet)
 
-- `shufflespan`
-- `shufflespan-directml`
-- `shufflespan-tensorrt`
-- `aniscale2`
-- `aniscale2-directml`
-- `aniscale2-tensorrt`
-- `open-proteus`
-- `compact`
-- `ultracompact`
-- `superultracompact`
-- `span`
-- `shufflecugan`
-- `segment`
-- `segment-tensorrt`
-- `segment-directml`
-- `scunet`
-- `dpir`
-- `real-plksr`
-- `nafnet`
-- `rife`
-- `rife4.6`
-- `rife4.15-lite`
-- `rife4.16-lite`
-- `rife4.17`
-- `rife4.18`
-- `rife4.20`
-- `rife4.21`
-- `rife4.22`
-- `rife4.22-lite`
-- `shufflecugan-directml`
-- `open-proteus-directml`
-- `compact-directml`
-- `ultracompact-directml`
-- `superultracompact-directml`
-- `span-directml`
-- `open-proteus-tensorrt`
-- `shufflecugan-tensorrt`
-- `compact-tensorrt`
-- `ultracompact-tensorrt`
-- `superultracompact-tensorrt`
-- `span-tensorrt`
+
 - `rife4.6-tensorrt`
 - `rife4.15-lite-tensorrt`
 - `rife4.17-tensorrt`
@@ -162,42 +171,13 @@ You need to specify a model name when running the application. Available models 
 - `rife4.21-tensorrt`
 - `rife4.22-tensorrt`
 - `rife4.22-lite-tensorrt`
-- `rife-v4.6-ncnn`
-- `rife-v4.15-lite-ncnn`
-- `rife-v4.16-lite-ncnn`
-- `rife-v4.17-ncnn`
-- `rife-v4.18-ncnn`
-- `span-ncnn`
-- `shufflecugan-ncnn`
-- `small_v2`
-- `base_v2`
-- `large_v2`
-- `small_v2-directml`
-- `base_v2-directml`
-- `large_v2-directml`
-- `small_v2-tensorrt`
-- `base_v2-tensorrt`
-- `large_v2-tensorrt`
-- `maxxvit-tensorrt`
-- `maxxvit-directml`
-- `shift_lpips-tensorrt`
-- `shift_lpips-directml`
-- `differential-tensorrt`
-- `rife4.19`
-- `rife4.19-lite`
-- `rife4.23`
-- `rife4.23-lite`
-- `rife4.24`
-- `rife4.24-lite`
-- `rife-v4.19-ncnn`
-- `rife-v4.19-lite-ncnn`
-- `rife-v4.23-ncnn`
-- `rife-v4.23-lite-ncnn`
-- `rife-v4.24-ncnn`
-- `rife-v4.24-lite-ncnn`
-
 
 Refer to the source code or documentation for a full list of supported models.
+
+## Usage
+```bash
+./RifeTensorRT /path/to/input_video.mp4 /path/to/output_video.mp4 model_name interpolation_factor [--benchmark]
+```
 
 ## Troubleshooting
 

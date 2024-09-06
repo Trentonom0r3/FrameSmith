@@ -138,8 +138,6 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
 }
 
 std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineLoader(const std::string& enginePath) {
-    std::cout << yellow("Loading TensorRT engine from file: ") << enginePath << std::endl;
-
     std::ifstream engineFile(enginePath, std::ios::binary);
     if (!engineFile) {
         std::cerr << red("Failed to open engine file: ") << enginePath << std::endl;

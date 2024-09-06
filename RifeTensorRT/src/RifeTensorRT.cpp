@@ -46,6 +46,9 @@ cachedInterpolatedAVFrame(nullptr)
     }
 
     handleModel();
+    // Create a tensor for the interpolation timestep
+    timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+
 }
 
 // Method to handle model loading and initialization
@@ -103,6 +106,10 @@ void RifeTensorRT::handleModel() {
 
     firstRun = true;
     useI0AsSource = true;
+    // Set the input and output tensor addresses in the TensorRT context
+    context->setTensorAddress("input", dummyInput.data_ptr());
+    context->setTensorAddress("output", dummyOutput.data_ptr());
+
 }
 
 // Preprocess frame and convert it to Torch tensor
@@ -151,15 +158,8 @@ AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEv
     destination.copy_(processFrame(inputTensor), true);
 
     // Create a tensor for the interpolation timestep
-    at::Tensor timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-
     // Prepare the input tensor for the interpolation (concatenating source, destination, and timestep)
     dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
-
-    // Set the input and output tensor addresses in the TensorRT context
-    context->setTensorAddress("input", dummyInput.data_ptr());
-    context->setTensorAddress("output", dummyOutput.data_ptr());
-
     // Enqueue the inference on the raw CUDA stream (asynchronously)
     if (!context->enqueueV3(raw_stream)) {
         std::cerr << "Error during TensorRT inference!" << std::endl;
@@ -171,7 +171,6 @@ AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEv
 
     // Flip the source buffer flag for the next run.
     useI0AsSource = !useI0AsSource;
-
     // Return the interpolated frame
     return interpolatedFrame;
 }

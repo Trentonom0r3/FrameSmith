@@ -180,7 +180,6 @@ inline std::string getWeightsDir() {
         std::string mainPath = std::string(appdata) + "\\RifeCpp";
         weightsDir = mainPath + "\\weights";
         fs::create_directories(weightsDir);
-        std::cout << "Weights directory: " << weightsDir << std::endl;
     }
     else {
         throw std::runtime_error("APPDATA environment variable not found.");
@@ -232,7 +231,6 @@ std::string downloadAndLog(const std::string& model, const std::string& filename
     for (int attempt = 0; attempt < retries; ++attempt) {
         try {
             if (std::filesystem::exists(filePath)) {
-                std::cout << model << " model already exists at: " << filePath << std::endl;
                 return filePath;
             }
 

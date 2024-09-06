@@ -26,7 +26,7 @@ void readFrames(FFmpegReader& reader) {
     cv.notify_all();
 }
 
-void processFrames(int& frameCount, FFmpegWriter& writer, RifeTensorRT& rifeTensorRT) {
+void processFrames(int& frameCount, FFmpegWriter* writer, RifeTensorRT& rifeTensorRT, bool benchmarkMode) {
     AVFrame* interpolatedFrame = av_frame_alloc();  // Reuse this frame
     cudaEvent_t inferenceFinishedEvent;
     cudaEventCreate(&inferenceFinishedEvent);  // Create a CUDA event
@@ -71,9 +71,11 @@ void processFrames(int& frameCount, FFmpegWriter& writer, RifeTensorRT& rifeTens
         // Copy the output tensor data back to AVFrame (this is crucial and was missing).
         memcpy(interpolatedFrame->data[0], outputTensor.data_ptr(), outputTensor.numel());
 
-        // Add to writer queue (optional)
-        //writer.addFrame(frame);
-        //writer.addFrame(interpolatedFrame);
+        if (!benchmarkMode) {
+            // Add to writer queue if not in benchmark mode
+            writer->addFrame(frame);
+            writer->addFrame(interpolatedFrame);
+        }
 
         frameCount++;
         av_frame_free(&frame);  // Free input frame
@@ -84,13 +86,21 @@ void processFrames(int& frameCount, FFmpegWriter& writer, RifeTensorRT& rifeTens
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <input_video_path> <output_video_path>" << std::endl;
+    if (argc < 5) {
+        std::cerr << "Usage: " << argv[0] << " <input_video_path> <output_video_path> <model_name> <interpolation_factor> [--benchmark]" << std::endl;
         return -1;
     }
 
     std::string inputVideoPath = argv[1];
     std::string outputVideoPath = argv[2];
+    std::string modelName = argv[3];
+    int interpolationFactor = std::stoi(argv[4]);
+
+    bool benchmarkMode = false;
+    if (argc > 5 && std::string(argv[5]) == "--benchmark") {
+        benchmarkMode = true;
+        std::cout << "Benchmark mode enabled." << std::endl;
+    }
 
     // Initialize FFmpeg-based video reader
     FFmpegReader reader(inputVideoPath);
@@ -98,32 +108,38 @@ int main(int argc, char** argv) {
     int height = reader.getHeight();
     double fps = reader.getFPS();
 
-    // Initialize RifeTensorRT
-    RifeTensorRT rifeTensorRT("rife4.20-tensorrt", 2, width, height, true, false);
+    // Initialize RifeTensorRT with the model name and interpolation factor
+    RifeTensorRT rifeTensorRT(modelName, interpolationFactor, width, height, true, false);
 
-    // Initialize FFmpeg-based video writer
-    FFmpegWriter writer(outputVideoPath, width, height, fps * 2);
+    // Initialize FFmpeg-based video writer if not in benchmark mode
+    FFmpegWriter* writer = nullptr;
+    if (!benchmarkMode) {
+        writer = new FFmpegWriter(outputVideoPath, width, height, fps * interpolationFactor);
+    }
 
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
     // Create threads for reading and processing frames
     std::thread readerThread(readFrames, std::ref(reader));
-    std::thread processorThread(processFrames, std::ref(frameCount), std::ref(writer), std::ref(rifeTensorRT));
+    std::thread processorThread(processFrames, std::ref(frameCount), writer, std::ref(rifeTensorRT), benchmarkMode);
 
     // Join the threads after work is done
     readerThread.join();
     processorThread.join();
 
-    // Finalize the writer
-    writer.finalize();
+    // Finalize the writer if not in benchmark mode
+    if (!benchmarkMode && writer != nullptr) {
+        writer->finalize();
+        delete writer;
+    }
 
     // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
-    double processingFPS = frameCount * 2 / duration.count();
+    double processingFPS = frameCount * interpolationFactor / duration.count();
 
-    std::cout << "Processed " << frameCount * 2 << " frames in " << duration.count() << " seconds." << std::endl;
+    std::cout << "Processed " << frameCount * interpolationFactor << " frames in " << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
     return 0;

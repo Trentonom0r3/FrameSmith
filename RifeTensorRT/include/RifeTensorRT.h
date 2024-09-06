@@ -25,7 +25,8 @@ public:
 
     // Main method to run interpolation on AVFrame
     AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEvent_t& inferenceFinishedEvent);
-
+    // Create a tensor for the interpolation timestep
+    at::Tensor timestep;
     // Caching of frames for performance optimization
     at::Tensor  cachedFrameI0;  // Cached source frame (AVFrame*)
     at::Tensor  cachedFrameI1;  // Cached destination frame (AVFrame*)
