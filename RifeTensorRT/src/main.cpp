@@ -1,6 +1,4 @@
-
 #include "RifeTensorRT.h"
-
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -8,21 +6,19 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <torch/torch.h>  // Include PyTorch for tensor handling
-#include "Reader.h"  // Updated reader header using tensors
-#include "Writer.h"  // Updated writer header using tensors
+#include "Reader.h"
+#include "Writer.h"  // Your FFmpegWriter class
 
-std::queue<torch::Tensor> frameQueue;
+std::queue<AVFrame*> frameQueue;
 std::mutex mtx;
 std::condition_variable cv;
 std::atomic<bool> doneReading(false);
 
-// Function for reading frames into a tensor queue
 void readFrames(FFmpegReader& reader) {
-    torch::Tensor preAllocatedInputTensor;  // GPU tensor
-    while (reader.readFrame(preAllocatedInputTensor)) {  // Updated to read into tensor
+    AVFrame* preAllocatedInputFrame = av_frame_alloc();
+    while (reader.readFrame(preAllocatedInputFrame)) {
         std::unique_lock<std::mutex> lock(mtx);
-        frameQueue.push(preAllocatedInputTensor.clone());  // Clone tensor to preserve original
+        frameQueue.push(av_frame_clone(preAllocatedInputFrame));  // Clone frame
         lock.unlock();
         cv.notify_one();
     }
@@ -42,9 +38,9 @@ void processFrames(int& frameCount, FFmpegWriter* writer, RifeTensorRT& rifeTens
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [] { return !frameQueue.empty() || doneReading; });
 
-        if (frameQueue.empty() && doneReading) break;  // Exit when no more frames
+        if (frameQueue.empty() && doneReading) break;
 
-        torch::Tensor tensor = frameQueue.front();
+        AVFrame* frame = frameQueue.front();
         frameQueue.pop();
         lock.unlock();
 
@@ -84,6 +80,9 @@ void processFrames(int& frameCount, FFmpegWriter* writer, RifeTensorRT& rifeTens
         frameCount++;
         av_frame_free(&frame);  // Free input frame
     }
+
+    av_frame_free(&interpolatedFrame);  // Free interpolated frame
+    cudaEventDestroy(inferenceFinishedEvent);  // Cleanup
 }
 
 int main(int argc, char** argv) {
@@ -103,7 +102,7 @@ int main(int argc, char** argv) {
         std::cout << "Benchmark mode enabled." << std::endl;
     }
 
-    // Initialize FFmpeg reader and writer
+    // Initialize FFmpeg-based video reader
     FFmpegReader reader(inputVideoPath);
     int width = reader.getWidth();
     int height = reader.getHeight();
@@ -121,14 +120,11 @@ int main(int argc, char** argv) {
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
-    // Thread for reading frames into tensors
+    // Create threads for reading and processing frames
     std::thread readerThread(readFrames, std::ref(reader));
     std::thread processorThread(processFrames, std::ref(frameCount), writer, std::ref(rifeTensorRT), benchmarkMode);
 
-    // Thread for processing (writing frames from tensors)
-    std::thread processorThread(processFrames, std::ref(frameCount), std::ref(writer));
-
-    // Wait for both threads to finish
+    // Join the threads after work is done
     readerThread.join();
     processorThread.join();
 
