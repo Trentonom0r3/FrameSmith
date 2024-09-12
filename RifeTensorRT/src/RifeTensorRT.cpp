@@ -9,6 +9,10 @@
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <Writer.h>
+#include <npp.h>
+#include <nppi.h>
+#include <nppi_color_conversion.h> // Add this line
+#include <nppi_support_functions.h>
 
 nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     nvinfer1::Dims dims;
@@ -19,18 +23,6 @@ nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     }
     return dims;
 }
-
-#include "RifeTensorRT.h"
-#include "downloadModels.h"
-#include "coloredPrints.h"
-#include <iostream>
-#include <fstream>
-#include <filesystem>
-#include <c10/cuda/CUDAStream.h>
-#include <trtHandler.h>
-#include <c10/core/ScalarType.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <Writer.h>
 
 // Helper function to set up CUDA device context
 int init_cuda_context(AVBufferRef** hw_device_ctx) {
@@ -98,7 +90,7 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
     }
 
     // Initialize CUDA frames context
-    hw_frames_ctx = init_cuda_frames_ctx(hw_device_ctx, width, height, AV_PIX_FMT_YUV420P); // Change this based on your source format
+    hw_frames_ctx = init_cuda_frames_ctx(hw_device_ctx, width, height, AV_PIX_FMT_NV12); // Change this based on your source format
     if (!hw_frames_ctx) {
         std::cerr << "Failed to initialize CUDA frames context" << std::endl;
         return;
@@ -254,6 +246,14 @@ void debugShowAVFrameYUV(AVFrame* gpu_yuv_frame) {
 // Function to convert a Torch tensor to OpenCV Mat and display the image
 void showTensorAsImage(torch::Tensor tensor) {
     // Step 1: Move the tensor to CPU if it's on the GPU (CUDA)
+    std::cout << "DEBUG PRINTS OF ALL TENSOR INFO: " << std::endl;
+    std::cout << "Tensor Device: " << tensor.device() << std::endl;
+    std::cout << "Tensor Data Type: " << tensor.dtype() << std::endl;
+    std::cout << "Tensor Shape: " << tensor.sizes() << std::endl;
+    std::cout << "Tensor Layout: " << tensor.layout() << std::endl;
+    std::cout << "Tensor Stride: " << tensor.strides() << std::endl;
+    std::cout << "Tensor Storage Offset: " << tensor.storage_offset() << std::endl;
+
     if (tensor.device().is_cuda()) {
         std::cout << "Moving tensor to CPU..." << std::endl;
         tensor = tensor.to(torch::kCPU);
@@ -262,8 +262,8 @@ void showTensorAsImage(torch::Tensor tensor) {
 
     // Step 2: Convert the tensor to uint8 (expected by OpenCV)
     tensor = tensor // Remove the batch dimension
-         // Ensure contiguous memory layout
-        .to(torch::kU8);       // Convert to unsigned 8-bit (0-255)
+        // Ensure contiguous memory layout
+        .to(torch::kU8).contiguous();       // Convert to unsigned 8-bit (0-255)
 
     // Step 3: Get tensor dimensions
     int height = tensor.size(0);
@@ -282,12 +282,18 @@ torch::Tensor avframe_nv12_to_rgb_npp(AVFrame* gpu_frame, uint8_t*& d_rgb, size_
     int width = gpu_frame->width;
     int height = gpu_frame->height;
 
-    // NPP uses pitch (line size) for memory alignment
-    int nYUVPitch = gpu_frame->linesize[0];  // NV12 Y plane pitch
-    int nUVPitch = gpu_frame->linesize[1];   // NV12 UV plane pitch
+    // Ensure the frame format is CUDA (GPU memory)
+    if (gpu_frame->format != AV_PIX_FMT_CUDA) {
+        std::cerr << "Frame is not in CUDA format." << std::endl;
+        return torch::Tensor();
+    }
 
+    // Source pitch for Y and UV planes
+    int nYUVPitch = gpu_frame->linesize[0];  // Y plane pitch
+    int nUVPitch = gpu_frame->linesize[1];   // UV plane pitch
+
+    // Allocate device memory for the RGB image if not already allocated
     if (!d_rgb) {
-        // Allocate device memory for the RGB image if it's not already allocated
         cudaMallocPitch(&d_rgb, &rgb_pitch, width * 3 * sizeof(uint8_t), height);
     }
 
@@ -298,26 +304,47 @@ torch::Tensor avframe_nv12_to_rgb_npp(AVFrame* gpu_frame, uint8_t*& d_rgb, size_
     const Npp8u* pSrc[2] = { gpu_frame->data[0], gpu_frame->data[1] };  // Y plane, UV plane (interleaved)
 
     // Perform NV12 to RGB conversion using NPP
-    NPP_CHECK_NPP(nppiNV12ToRGB_8u_P2C3R(
-        pSrc, nYUVPitch,   // Source Y and UV data and pitch
-        d_rgb, rgb_pitch,  // Destination RGB buffer and pitch
-        oSizeROI          // Size of the image (Region of Interest)
-    ));
+    NppStatus status = nppiNV12ToRGB_8u_P2C3R(
+        pSrc, nYUVPitch,           // Source YUV planes and pitch
+        d_rgb, rgb_pitch,          // Destination RGB buffer and pitch
+        oSizeROI                   // ROI specifying the image size
+    );
 
-    // Step 1: Allocate a Torch tensor on the GPU (with exact size)
-    torch::Tensor tensor = torch::empty({ 1, 3, height, width }, torch::TensorOptions().device(torch::kCUDA).dtype(torch::kByte));
+    // Check for errors in NPP function
+    if (status != NPP_SUCCESS) {
+        std::cerr << "NPP error during NV12 to RGB conversion: " << status << std::endl;
+        return torch::Tensor();
+    }
 
-    // Step 2: Copy the GPU buffer (d_rgb) into the Torch tensor memory using cudaMemcpy2D
-    cudaMemcpy2D(
-		tensor.data_ptr(), width * 3,  // Destination pointer and pitch
-		d_rgb, rgb_pitch,              // Source pointer and pitch
-		width * 3, height,              // Width, height
-		cudaMemcpyDeviceToDevice        // Direction of the copy
-	);
-   //showTensorAsImage(tensor);
-    // Step 3: Return the tensor
-    return tensor;
+    // Allocate a Torch tensor on the GPU with the shape {height, width, 3}
+    torch::Tensor tensor = torch::empty({ height, width, 3 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA)).contiguous();
+
+    // Copy the RGB data from the NPP buffer to the Torch tensor
+    cudaError_t err = cudaMemcpy2D(
+        tensor.data_ptr(), width * 3 * sizeof(uint8_t),  // Destination tensor pointer and pitch
+        d_rgb, rgb_pitch,                               // Source RGB buffer and pitch
+        width * 3 * sizeof(uint8_t), height,            // Width, height
+        cudaMemcpyDeviceToDevice                        // Copy direction
+    );
+
+    // Check for CUDA errors
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error during memcpy2D: " << cudaGetErrorString(err) << std::endl;
+        return torch::Tensor();  // Return an empty tensor on error
+    }
+
+    // Display the tensor as an image for debugging
+  //  showTensorAsImage(tensor);
+
+    // Return the tensor for further processing
+    return tensor.unsqueeze(0) // Add a batch dimension
+		.permute({ 0, 3, 1, 2 }) // Permute dimensions to NCHW
+		.contiguous();           // Ensure memory is contiguous
 }
+
+
+
+
 
 
 // Preprocess the frame: normalize and permute dimensions (NHWC to NCHW)
@@ -341,17 +368,80 @@ torch::Tensor avframe_to_tensor(AVFrame* gpu_frame) {
         gpu_frame->data[0],  // pointer to GPU data
         { height, width, channels },  // frame dimensions
         torch::TensorOptions().device(torch::kCUDA).dtype(torch::kUInt8)
-    );
+    ).contiguous();  // Ensure memory is contiguous
 
     return tensor;
 }
+
+torch::Tensor avframe_rgb_to_nv12_npp(at::Tensor rgb_tensor, int width, int height) {
+    // Ensure the input tensor is contiguous and in HWC format
+    rgb_tensor = rgb_tensor.contiguous();
+
+    // Allocate tensors for Y, U, and V planes on GPU
+    torch::Tensor y_plane = torch::empty({ height, width }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    torch::Tensor u_plane = torch::empty({ height / 2, width / 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    torch::Tensor v_plane = torch::empty({ height / 2, width / 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+
+    // Set up destination pointers and strides
+    Npp8u* pDst[3] = { y_plane.data_ptr<Npp8u>(), u_plane.data_ptr<Npp8u>(), v_plane.data_ptr<Npp8u>() };
+    int rDstStep[3] = { static_cast<int>(width), static_cast<int>(width / 2), static_cast<int>(width / 2) };
+
+    // Source RGB data and step
+    Npp8u* pSrc = rgb_tensor.data_ptr<Npp8u>();
+    int nSrcStep = width * 3;
+
+    // Define ROI
+    NppiSize oSizeROI = { width, height };
+
+    // Perform RGB to YUV420 conversion (planar)
+    NppStatus status = nppiRGBToYUV420_8u_C3P3R(
+        pSrc,
+        nSrcStep,
+        pDst,
+        rDstStep,
+        oSizeROI
+    );
+
+    if (status != NPP_SUCCESS) {
+        std::cerr << "NPP error during RGB to YUV420 conversion: " << status << std::endl;
+        return torch::Tensor();
+    }
+
+    // Move U and V planes to CPU
+    torch::Tensor u_plane_cpu = u_plane.cpu();
+    torch::Tensor v_plane_cpu = v_plane.cpu();
+
+    // Interleave U and V planes on CPU to create the UV plane for NV12
+    // Allocate UV plane on CPU
+    torch::Tensor uv_plane_cpu = torch::empty({ height / 2, width }, torch::TensorOptions().dtype(torch::kUInt8));
+
+    // Interleave U and V planes
+    for (int i = 0; i < height / 2; ++i) {
+        uint8_t* u_row = u_plane_cpu.data_ptr<uint8_t>() + i * (width / 2);
+        uint8_t* v_row = v_plane_cpu.data_ptr<uint8_t>() + i * (width / 2);
+        uint8_t* uv_row = uv_plane_cpu.data_ptr<uint8_t>() + i * width;
+        for (int j = 0; j < width / 2; ++j) {
+            uv_row[j * 2] = u_row[j];
+            uv_row[j * 2 + 1] = v_row[j];
+        }
+    }
+
+    // Move UV plane back to GPU
+    torch::Tensor uv_plane = uv_plane_cpu.to(torch::kCUDA);
+
+    // Concatenate Y plane and UV plane into NV12 tensor
+    torch::Tensor nv12_tensor = torch::cat({ y_plane.flatten(), uv_plane.flatten() }, 0);
+
+    return nv12_tensor;
+}
+
 void RifeTensorRT::run(AVFrame* inputFrame, FFmpegWriter& writer) {
     static uint8_t* d_rgb = nullptr;  // Reusable device buffer for RGB frames
     static size_t rgb_pitch = 0;      // Reusable pitch for RGB buffer
 
     // Convert the input AVFrame (NV12) to a Torch tensor (RGB) using NPP
     at::Tensor processedTensor = processFrame(avframe_nv12_to_rgb_npp(inputFrame, d_rgb, rgb_pitch));
-   // showTensorAsImage(processedTensor.squeeze(0));
+
     if (firstRun) {
         I0.copy_(processedTensor, true);
         firstRun = false;
@@ -368,42 +458,70 @@ void RifeTensorRT::run(AVFrame* inputFrame, FFmpegWriter& writer) {
 
     for (int i = 0; i < interpolateFactor - 1; ++i) {
         auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
+        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), false);
 
         if (!context->enqueueV3(stream)) {
             std::cerr << "Error during TensorRT inference!" << std::endl;
             return;
         }
 
-        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8);
-     
-        int tensorHeight = output.size(0);
-        int tensorWidth = output.size(1);
-        int tensorChannels = output.size(2);
+        // Convert the result tensor back to NV12 format
+        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 })
+            .mul(255.0).clamp(0, 255).to(torch::kU8).contiguous();
 
-       // std::cout << "Showing output" << std::endl;
-       // showTensorAsImage(output);
-      //  std::cout << "Frame Format: " << av_get_pix_fmt_name((AVPixelFormat)inputFrame->format) << std::endl;
-        interpolatedFrame->format = AV_PIX_FMT_CUDA;
-        interpolatedFrame->width = tensorWidth;
-        interpolatedFrame->height = tensorHeight;
+        // Convert the output tensor (RGB) to NV12
+        at::Tensor nv12_tensor = avframe_rgb_to_nv12_npp(output, width, height);
 
-        if (av_hwframe_get_buffer(hw_frames_ctx, interpolatedFrame, 32) < 0) {
-            std::cerr << "Error allocating CUDA frame buffer!" << std::endl;
+        // Check if nv12_tensor is valid
+        if (!nv12_tensor.defined()) {
+            std::cerr << "Failed to convert RGB to NV12." << std::endl;
             return;
         }
 
-        void* dstPtr = interpolatedFrame->data[0];
-        void* srcPtr = output.data_ptr();
-        cudaMemcpyAsync(dstPtr, srcPtr, tensorWidth * tensorHeight * tensorChannels, cudaMemcpyDeviceToDevice, writestream);
-       // debugShowAVFrameYUV(interpolatedFrame);
-        if (!benchmarkMode) {
-			writer.addFrame(interpolatedFrame);
-		}
-       // writer.addFrame(interpolatedFrame);
+        // Allocate the frame
+        av_frame_unref(interpolatedFrame); // Unreference the frame before reusing
+        interpolatedFrame->format = AV_PIX_FMT_NV12;
+        interpolatedFrame->width = width;
+        interpolatedFrame->height = height;
+
+        if (av_hwframe_get_buffer(hw_frames_ctx, interpolatedFrame, 0) < 0) {
+            std::cerr << "Error allocating frame" << std::endl;
+            return;
+        }
+
+        // Copy the NV12 tensor data back into the interpolated frame
+
+        // Copy Y plane
+        cudaMemcpy2DAsync(
+            interpolatedFrame->data[0],             // Destination pointer
+            interpolatedFrame->linesize[0],         // Destination pitch (line size)
+            nv12_tensor.data_ptr<uint8_t>(),        // Source pointer (Y plane)
+            width * sizeof(uint8_t),                // Source pitch
+            width * sizeof(uint8_t),                // Width of the copied region
+            height,                                 // Height of the copied region
+            cudaMemcpyDeviceToDevice,               // Copy kind
+            writestream													  // Stream for asynchronous copy
+        );
+
+        // Copy UV plane
+        cudaMemcpy2DAsync(
+            interpolatedFrame->data[1],                                     // Destination pointer
+            interpolatedFrame->linesize[1],                                 // Destination pitch (line size)
+            nv12_tensor.data_ptr<uint8_t>() + (width * height),             // Source pointer (UV plane)
+            width * sizeof(uint8_t),                                        // Source pitch
+            width * sizeof(uint8_t),                                        // Width of the copied region
+            height / 2,                                                     // Height of the copied region (UV plane is half the height)
+            cudaMemcpyDeviceToDevice,                                        // Copy kind
+            writestream													  // Stream for asynchronous copy
+        );
+
+        // Add the frame to the writer
+        writer.addFrame(interpolatedFrame);
     }
+
     if (!benchmarkMode) {
         writer.addFrame(inputFrame);
     }
+
     useI0AsSource = !useI0AsSource;
 }

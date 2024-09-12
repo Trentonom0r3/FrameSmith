@@ -45,7 +45,9 @@ void readAndProcessFrames(FFmpegReader& reader, FFmpegWriter* writer, RifeTensor
 
 int main(int argc, char** argv) {
     if (argc < 5) {
-        std::cerr << "Usage: " << argv[0] << " <input_video_path> <output_video_path> <model_name> <interpolation_factor> [--benchmark]" << std::endl;
+        std::cerr << "Usage: " << argv[0]
+            << " <input_video_path> <output_video_path> <model_name> <interpolation_factor>"
+            << " [--batch_size N] [--benchmark]" << std::endl;
         return -1;
     }
 
@@ -54,10 +56,32 @@ int main(int argc, char** argv) {
     std::string modelName = argv[3];
     int interpolationFactor = std::stoi(argv[4]);
 
+    int batchSize = 5;  // Default batch size
     bool benchmarkMode = false;
-    if (argc > 5 && std::string(argv[5]) == "--benchmark") {
-        benchmarkMode = true;
-        std::cout << "Benchmark mode enabled." << std::endl;
+
+    // Parse optional arguments
+    int argIndex = 5;
+    while (argIndex < argc) {
+        std::string arg = argv[argIndex];
+        if (arg == "--batch_size") {
+            if (argIndex + 1 < argc) {
+                batchSize = std::stoi(argv[++argIndex]);
+                argIndex++;
+            }
+            else {
+                std::cerr << "Error: --batch_size requires a value." << std::endl;
+                return -1;
+            }
+        }
+        else if (arg == "--benchmark") {
+            benchmarkMode = true;
+            std::cout << "Benchmark mode enabled." << std::endl;
+            argIndex++;
+        }
+        else {
+            std::cerr << "Unknown argument: " << arg << std::endl;
+            return -1;
+        }
     }
 
     // Initialize FFmpeg-based video reader
@@ -79,7 +103,7 @@ int main(int argc, char** argv) {
     auto startTime = std::chrono::high_resolution_clock::now();
 
     // Directly call read and process function with CUDA stream-based concurrency
-    readAndProcessFrames(reader, writer, rifeTensorRT, 25, benchmarkMode, frameCount);
+    readAndProcessFrames(reader, writer, rifeTensorRT, batchSize, benchmarkMode, frameCount);
 
     // Finalize the writer if not in benchmark mode
     if (!benchmarkMode && writer != nullptr) {
@@ -92,7 +116,8 @@ int main(int argc, char** argv) {
     std::chrono::duration<double> duration = endTime - startTime;
     double processingFPS = frameCount * interpolationFactor / duration.count();
 
-    std::cout << "Processed " << frameCount * interpolationFactor << " frames in " << duration.count() << " seconds." << std::endl;
+    std::cout << "Processed " << frameCount * interpolationFactor << " frames in "
+        << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
     return 0;
