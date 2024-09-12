@@ -8,6 +8,7 @@
 #include <trtHandler.h>
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <Writer.h>
 
 nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     nvinfer1::Dims dims;
@@ -19,37 +20,103 @@ nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     return dims;
 }
 
-// Constructor: Initializes the TensorRT RIFE model
-RifeTensorRT::RifeTensorRT(
-    std::string interpolateMethod,
-    int interpolateFactor,
-    int width,
-    int height,
-    bool half,
-    bool ensemble
-) : interpolateMethod(interpolateMethod),
-interpolateFactor(interpolateFactor),
-width(width),
-height(height),
-half(half),
-ensemble(ensemble),
-firstRun(true),
-useI0AsSource(true),
-isFrameCached(false), // Initialize caching flag
-device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-stream(c10::cuda::getStreamFromPool(false, device.index())),
-cachedInterpolatedAVFrame(nullptr)
-{
-    if (width > 1920 && height > 1080 && half) {
-        std::cout << "UHD and fp16 are not compatible with RIFE, defaulting to fp32" << std::endl;
-        this->half = false;
+#include "RifeTensorRT.h"
+#include "downloadModels.h"
+#include "coloredPrints.h"
+#include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <c10/cuda/CUDAStream.h>
+#include <trtHandler.h>
+#include <c10/core/ScalarType.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <Writer.h>
+
+// Helper function to set up CUDA device context
+int init_cuda_context(AVBufferRef** hw_device_ctx) {
+    int err = av_hwdevice_ctx_create(hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+    if (err < 0) {
+        char err_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, err);
+        std::cerr << "Failed to create CUDA device context: " << err_buf << std::endl;
+        return err;
+    }
+    return 0;
+}
+
+// Helper function to set up CUDA frames context
+AVBufferRef* init_cuda_frames_ctx(AVBufferRef* hw_device_ctx, int width, int height, AVPixelFormat sw_format) {
+    AVBufferRef* hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
+    if (!hw_frames_ref) {
+        std::cerr << "Failed to create hardware frames context" << std::endl;
+        return nullptr;
     }
 
+    AVHWFramesContext* frames_ctx = (AVHWFramesContext*)(hw_frames_ref->data);
+    frames_ctx->format = AV_PIX_FMT_CUDA;
+    frames_ctx->sw_format = sw_format;
+    frames_ctx->width = width;
+    frames_ctx->height = height;
+    frames_ctx->initial_pool_size = 20;
+
+    int err = av_hwframe_ctx_init(hw_frames_ref);
+    if (err < 0) {
+        char err_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, err);
+        std::cerr << "Failed to initialize hardware frame context: " << err_buf << std::endl;
+        av_buffer_unref(&hw_frames_ref);
+        return nullptr;
+    }
+
+    return hw_frames_ref;
+}
+
+// Constructor implementation with CUDA context setup
+RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor, int width, int height, bool half, bool ensemble, bool benchmark)
+    : interpolateMethod(interpolateMethod),
+    interpolateFactor(interpolateFactor),
+    width(width),
+    height(height),
+    half(half),
+    ensemble(ensemble),
+    firstRun(true),
+    useI0AsSource(true),
+    device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
+    benchmarkMode(benchmark)
+{
+    // Initialize model and tensors
     handleModel();
-    // Create a tensor for the interpolation timestep
-    timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+
+    // Initialize CUDA streams
+    cudaStreamCreate(&stream);
+    cudaStreamCreate(&writestream);
+
+    // Initialize CUDA device context
+    if (init_cuda_context(&hw_device_ctx) < 0) {
+        std::cerr << "Failed to initialize CUDA context" << std::endl;
+        return;
+    }
+
+    // Initialize CUDA frames context
+    hw_frames_ctx = init_cuda_frames_ctx(hw_device_ctx, width, height, AV_PIX_FMT_YUV420P); // Change this based on your source format
+    if (!hw_frames_ctx) {
+        std::cerr << "Failed to initialize CUDA frames context" << std::endl;
+        return;
+    }
+
+    interpolatedFrame = av_frame_alloc();
+    interpolatedFrame->hw_frames_ctx = av_buffer_ref(hw_frames_ctx); // Set the CUDA frames context
 
 }
+
+RifeTensorRT::~RifeTensorRT() {
+    cudaStreamDestroy(stream);
+    cudaStreamDestroy(writestream);
+    av_frame_free(&interpolatedFrame);
+    av_buffer_unref(&hw_frames_ctx);
+    av_buffer_unref(&hw_device_ctx);
+}
+
 
 // Method to handle model loading and initialization
 void RifeTensorRT::handleModel() {
@@ -112,65 +179,231 @@ void RifeTensorRT::handleModel() {
 
 }
 
-// Preprocess frame and convert it to Torch tensor
-at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
-    try {
-        auto processed = frame.to(dType, /*non_blocking=*/true, /*copy=*/true)
-            .permute({ 0, 3, 1, 2 })  // NHWC to NCHW
-            .div(255.0)               // Normalize to [0, 1]
-            .contiguous();
-        return processed;
+#include <npp.h>
+#include <nppi.h>
+
+
+// Define error handling macros
+#define NPP_CHECK_NPP(func) { \
+    NppStatus status = (func); \
+    if (status != NPP_SUCCESS) { \
+        std::cerr << "NPP Error: " << status << std::endl; \
+        exit(-1); \
+    } \
+}
+#include <opencv2/opencv.hpp>
+
+void debugShowAVFrameYUV(AVFrame* gpu_yuv_frame) {
+    // Step 1: Transfer the CUDA frame to a CPU-based frame (still in YUV format)
+    cv::setUseOptimized(false);
+    AVFrame* cpu_yuv_frame = av_frame_alloc();
+    if (av_hwframe_transfer_data(cpu_yuv_frame, gpu_yuv_frame, 0) < 0) {
+        std::cerr << "Error transferring frame from CUDA to CPU" << std::endl;
+        av_frame_free(&cpu_yuv_frame);
+        return;
     }
-    catch (const c10::Error& e) {
-        std::cerr << "Error during processFrame: " << e.what() << std::endl;
-        throw; // Re-throw after logging
+
+    // Print the format to verify it's correct
+    std::cout << "Transferred YUV Frame Format: " << cpu_yuv_frame->format << std::endl;
+
+    // Step 2: Create a SwsContext for converting YUV (CPU) to RGB
+    // Force the YUV format to NV12 or YUV420p if necessary
+    SwsContext* sws_ctx = sws_getContext(
+        cpu_yuv_frame->width, cpu_yuv_frame->height, AV_PIX_FMT_NV12,  // Force format to NV12 (adjust if needed)
+        cpu_yuv_frame->width, cpu_yuv_frame->height, AV_PIX_FMT_RGB24, // Destination format (RGB)
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );
+
+    if (!sws_ctx) {
+        std::cerr << "Failed to create SwsContext!" << std::endl;
+        av_frame_free(&cpu_yuv_frame);
+        return;
     }
+
+    // Step 3: Allocate an AVFrame for the RGB image
+    AVFrame* rgb_frame = av_frame_alloc();
+    rgb_frame->format = AV_PIX_FMT_RGB24;
+    rgb_frame->width = cpu_yuv_frame->width;
+    rgb_frame->height = cpu_yuv_frame->height;
+    av_frame_get_buffer(rgb_frame, 32);  // Allocate RGB frame buffer
+
+    // Step 4: Convert YUV (CPU) to RGB
+    sws_scale(
+        sws_ctx,
+        cpu_yuv_frame->data, cpu_yuv_frame->linesize, 0, cpu_yuv_frame->height,  // Source YUV data
+        rgb_frame->data, rgb_frame->linesize                                      // Destination RGB data
+    );
+
+    // Step 5: Convert the RGB AVFrame to OpenCV Mat
+    cv::Mat rgb_image(
+        rgb_frame->height, rgb_frame->width, CV_8UC3,               // OpenCV expects CV_8UC3 for RGB
+        rgb_frame->data[0], rgb_frame->linesize[0]                  // Data pointer and line size from AVFrame
+    );
+
+    // Step 6: Display the image using OpenCV
+    cv::imshow("YUV to RGB Image", rgb_image);
+    cv::waitKey(0);  // Wait for a key press to close the window
+
+    // Step 7: Clean up and free the frames
+    sws_freeContext(sws_ctx);
+    av_frame_free(&rgb_frame);
+    av_frame_free(&cpu_yuv_frame);
 }
 
-// Run inference on an input frame and return the interpolated result asynchronously
-AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEvent_t& inferenceFinishedEvent) {
-    // Get raw CUDA stream from torch::cuda::CUDAStream for asynchronous execution.
-    c10::cuda::CUDAStreamGuard guard(stream);
-    cudaStream_t raw_stream = stream.stream();
 
-    // Ensure the AVFrame is writable before modifying it.
-    if (av_frame_make_writable(rgbFrame) < 0) {
-        std::cerr << "Cannot make AVFrame writable!" << std::endl;
-        return nullptr;
+// Function to convert a Torch tensor to OpenCV Mat and display the image
+void showTensorAsImage(torch::Tensor tensor) {
+    // Step 1: Move the tensor to CPU if it's on the GPU (CUDA)
+    if (tensor.device().is_cuda()) {
+        std::cout << "Moving tensor to CPU..." << std::endl;
+        tensor = tensor.to(torch::kCPU);
+    }
+    cv::setUseOptimized(false);
+
+    // Step 2: Convert the tensor to uint8 (expected by OpenCV)
+    tensor = tensor // Remove the batch dimension
+         // Ensure contiguous memory layout
+        .to(torch::kU8);       // Convert to unsigned 8-bit (0-255)
+
+    // Step 3: Get tensor dimensions
+    int height = tensor.size(0);
+    int width = tensor.size(1);
+    int channels = tensor.size(2);
+
+    // Step 4: Convert Torch tensor to OpenCV Mat
+    cv::Mat image(height, width, (channels == 3 ? CV_8UC3 : CV_8UC1), tensor.data_ptr<uint8_t>());
+
+    // Step 5: Display the image using OpenCV
+    cv::imshow("Tensor Image", image);
+    cv::waitKey(0);  // Wait for a key press to close the window
+}
+
+torch::Tensor avframe_nv12_to_rgb_npp(AVFrame* gpu_frame, uint8_t*& d_rgb, size_t& rgb_pitch) {
+    int width = gpu_frame->width;
+    int height = gpu_frame->height;
+
+    // NPP uses pitch (line size) for memory alignment
+    int nYUVPitch = gpu_frame->linesize[0];  // NV12 Y plane pitch
+    int nUVPitch = gpu_frame->linesize[1];   // NV12 UV plane pitch
+
+    if (!d_rgb) {
+        // Allocate device memory for the RGB image if it's not already allocated
+        cudaMallocPitch(&d_rgb, &rgb_pitch, width * 3 * sizeof(uint8_t), height);
     }
 
-    // Convert AVFrame to Torch tensor (assuming interleaved RGB format).
-    at::Tensor inputTensor = AVFrameToTensor(rgbFrame);
+    // NPP requires ROI (Region of Interest) to process the image
+    NppiSize oSizeROI = { width, height };
 
+    // Set up the array of pointers to Y and UV data
+    const Npp8u* pSrc[2] = { gpu_frame->data[0], gpu_frame->data[1] };  // Y plane, UV plane (interleaved)
+
+    // Perform NV12 to RGB conversion using NPP
+    NPP_CHECK_NPP(nppiNV12ToRGB_8u_P2C3R(
+        pSrc, nYUVPitch,   // Source Y and UV data and pitch
+        d_rgb, rgb_pitch,  // Destination RGB buffer and pitch
+        oSizeROI          // Size of the image (Region of Interest)
+    ));
+
+    // Step 1: Allocate a Torch tensor on the GPU (with exact size)
+    torch::Tensor tensor = torch::empty({ 1, 3, height, width }, torch::TensorOptions().device(torch::kCUDA).dtype(torch::kByte));
+
+    // Step 2: Copy the GPU buffer (d_rgb) into the Torch tensor memory using cudaMemcpy2D
+    cudaMemcpy2D(
+		tensor.data_ptr(), width * 3,  // Destination pointer and pitch
+		d_rgb, rgb_pitch,              // Source pointer and pitch
+		width * 3, height,              // Width, height
+		cudaMemcpyDeviceToDevice        // Direction of the copy
+	);
+   //showTensorAsImage(tensor);
+    // Step 3: Return the tensor
+    return tensor;
+}
+
+
+// Preprocess the frame: normalize and permute dimensions (NHWC to NCHW)
+// Preprocess the frame: normalize pixel values
+at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
+    // Since the input tensor is already [1, 3, H, W] (NCHW), no need to permute
+   // showTensorAsImage(frame.squeeze(0));
+    return frame.to(half ? torch::kFloat16 : torch::kFloat32)
+        .div(255.0)              // Normalize pixel values
+        .clamp(0.0, 1.0)         // Clamp to [0, 1]
+        .contiguous();           // Ensure memory is contiguous
+}
+
+torch::Tensor avframe_to_tensor(AVFrame* gpu_frame) {
+    int width = gpu_frame->width;
+    int height = gpu_frame->height;
+    int channels = 3;  // Assuming RGB or YUV format
+
+    // Wrap the GPU memory (gpu_frame->data[0]) into a torch::Tensor
+    torch::Tensor tensor = torch::from_blob(
+        gpu_frame->data[0],  // pointer to GPU data
+        { height, width, channels },  // frame dimensions
+        torch::TensorOptions().device(torch::kCUDA).dtype(torch::kUInt8)
+    );
+
+    return tensor;
+}
+void RifeTensorRT::run(AVFrame* inputFrame, FFmpegWriter& writer) {
+    static uint8_t* d_rgb = nullptr;  // Reusable device buffer for RGB frames
+    static size_t rgb_pitch = 0;      // Reusable pitch for RGB buffer
+
+    // Convert the input AVFrame (NV12) to a Torch tensor (RGB) using NPP
+    at::Tensor processedTensor = processFrame(avframe_nv12_to_rgb_npp(inputFrame, d_rgb, rgb_pitch));
+   // showTensorAsImage(processedTensor.squeeze(0));
     if (firstRun) {
-        // On the first run, initialize the source frame.
-        I0.copy_(processFrame(inputTensor), true);
+        I0.copy_(processedTensor, true);
         firstRun = false;
-        interpolatedFrame = rgbFrame;
-        return interpolatedFrame;
+        if (!benchmarkMode) {
+            writer.addFrame(inputFrame);
+        }
+        return;
     }
 
-    // Use the source and destination buffers for double-buffering.
+    // Alternate between I0 and I1 for double-buffering
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
+    destination.copy_(processedTensor, true);
 
-    // Copy the input frame to the destination buffer.
-    destination.copy_(processFrame(inputTensor), true);
+    for (int i = 0; i < interpolateFactor - 1; ++i) {
+        auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+        dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
 
-    // Create a tensor for the interpolation timestep
-    // Prepare the input tensor for the interpolation (concatenating source, destination, and timestep)
-    dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
-    // Enqueue the inference on the raw CUDA stream (asynchronously)
-    if (!context->enqueueV3(raw_stream)) {
-        std::cerr << "Error during TensorRT inference!" << std::endl;
-        return nullptr;
+        if (!context->enqueueV3(stream)) {
+            std::cerr << "Error during TensorRT inference!" << std::endl;
+            return;
+        }
+
+        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 }).mul(255.0).clamp(0, 255).to(torch::kU8);
+     
+        int tensorHeight = output.size(0);
+        int tensorWidth = output.size(1);
+        int tensorChannels = output.size(2);
+
+       // std::cout << "Showing output" << std::endl;
+       // showTensorAsImage(output);
+      //  std::cout << "Frame Format: " << av_get_pix_fmt_name((AVPixelFormat)inputFrame->format) << std::endl;
+        interpolatedFrame->format = AV_PIX_FMT_CUDA;
+        interpolatedFrame->width = tensorWidth;
+        interpolatedFrame->height = tensorHeight;
+
+        if (av_hwframe_get_buffer(hw_frames_ctx, interpolatedFrame, 32) < 0) {
+            std::cerr << "Error allocating CUDA frame buffer!" << std::endl;
+            return;
+        }
+
+        void* dstPtr = interpolatedFrame->data[0];
+        void* srcPtr = output.data_ptr();
+        cudaMemcpyAsync(dstPtr, srcPtr, tensorWidth * tensorHeight * tensorChannels, cudaMemcpyDeviceToDevice, writestream);
+       // debugShowAVFrameYUV(interpolatedFrame);
+        if (!benchmarkMode) {
+			writer.addFrame(interpolatedFrame);
+		}
+       // writer.addFrame(interpolatedFrame);
     }
-
-    // Record an event to notify when inference has completed
-    cudaEventRecord(inferenceFinishedEvent, raw_stream);
-
-    // Flip the source buffer flag for the next run.
+    if (!benchmarkMode) {
+        writer.addFrame(inputFrame);
+    }
     useI0AsSource = !useI0AsSource;
-    // Return the interpolated frame
-    return interpolatedFrame;
 }

@@ -3,7 +3,8 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include <thread>
+#include <algorithm>  // std::min
+#include <thread>     // std::thread::hardware_concurrency()
 #include <atomic>
 
 extern "C" {
@@ -11,6 +12,9 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_cuda.h>
 }
 
 class FFmpegWriter {
@@ -41,16 +45,16 @@ private:
     void writeFrame(AVFrame* inputFrame);  // Internal method for writing frames
 };
 
-FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int height, int fps)
+inline FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int height, int fps)
     : width(width), height(height), fps(fps) {
 
     avformat_alloc_output_context2(&formatCtx, nullptr, "mp4", outputFilePath.c_str());
 
     const AVCodec* codec = avcodec_find_encoder_by_name("h264_nvenc");  // Use NVENC encoder
     if (!codec) {
-		std::cerr << "Error finding NVENC codec." << std::endl;
-		return;
-	}   
+        std::cerr << "Error finding NVENC codec." << std::endl;
+        return;
+    }
     codecCtx = avcodec_alloc_context3(codec);
     codecCtx->codec_id = codec->id;
     codecCtx->width = width;
@@ -59,13 +63,15 @@ FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int hei
     codecCtx->framerate = { fps, 1 };
     codecCtx->gop_size = 12;
     codecCtx->max_b_frames = 0;
-    codecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+    codecCtx->pix_fmt = AV_PIX_FMT_NV12;  // Use NV12 for hardware encoding
 
     // Use CRF for variable bitrate
-    av_opt_set(codecCtx->priv_data, "crf", "23", 0);  // Adjust CRF value (18-28 is typical)
+    av_opt_set(codecCtx->priv_data, "crf", "23", 0);  // Adjust CRF value
+    av_opt_set(codecCtx->priv_data, "preset", "p4", 0);  // Use p1-p7 preset for NVENC
+    av_opt_set(codecCtx->priv_data, "tune", "ll", 0);  // Tune for low-latency
 
-    // Use multiple threads for encoding
-    codecCtx->thread_count = std::thread::hardware_concurrency();
+    // Use multiple threads for encoding (limited to 16)
+    codecCtx->thread_count = (std::min)(static_cast<int>(std::thread::hardware_concurrency()), 16);
     codecCtx->thread_type = FF_THREAD_FRAME;  // Frame-based threading
 
     avcodec_open2(codecCtx, codec, nullptr);
@@ -77,25 +83,23 @@ FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int hei
     avformat_write_header(formatCtx, nullptr);
 
     frame = av_frame_alloc();
-    frame->format = codecCtx->pix_fmt;
+    frame->format = codecCtx->pix_fmt;  // Ensure NV12 format
     frame->width = codecCtx->width;
     frame->height = codecCtx->height;
     av_frame_get_buffer(frame, 32);
 
     packet = av_packet_alloc();
 
-    // Use faster scaling algorithm
+    // Use faster scaling algorithm for RGB to NV12 conversion
     swsCtx = sws_getContext(width, height, AV_PIX_FMT_RGB24,  // Source format
-        width, height, AV_PIX_FMT_YUV420P,  // Destination format
+        width, height, AV_PIX_FMT_NV12,  // Destination format (ensure YUV conversion)
         SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);  // Fast scaling algorithm
 
     writerThread = std::thread(&FFmpegWriter::writeThread, this);
 }
 
-
-
 // Thread method for writing frames from the queue
-void FFmpegWriter::writeThread() {
+inline void FFmpegWriter::writeThread() {
     while (true) {
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [this] { return !frameQueue.empty() || doneReadingFrames; });
@@ -106,49 +110,92 @@ void FFmpegWriter::writeThread() {
         frameQueue.pop();
         lock.unlock();
 
-        // Write the frame
+        // Write the frame immediately
         writeFrame(frame);
         av_frame_free(&frame);
     }
 }
 
-// Add frame to the queue
-void FFmpegWriter::addFrame(AVFrame* inputFrame) {
-    if (!frame || !frame->data[0]) {
-        std::cerr << "Invalid input frame or uninitialized data pointers." << std::endl;
-        return;
-    }
-    std::unique_lock<std::mutex> lock(mtx);
-    frameQueue.push(av_frame_clone(inputFrame));  // Clone the input frame
-    lock.unlock();
-    cv.notify_one();  // Notify the writer thread that a new frame is available
-}
-
-// Internal method for writing frames
-void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
+inline void FFmpegWriter::addFrame(AVFrame* inputFrame) {
     if (!inputFrame || !inputFrame->data[0]) {
         std::cerr << "Invalid input frame or uninitialized data pointers." << std::endl;
         return;
     }
 
-    // Ensure the frame is writable (for YUV conversion)
-    if (av_frame_make_writable(frame) < 0) {
-        std::cerr << "Error making frame writable" << std::endl;
+    AVFrame* frameToEncode = nullptr;
+
+    // Assign a PTS to the input frame if it's not already set
+    inputFrame->pts = pts++;
+
+    if (inputFrame->format == AV_PIX_FMT_CUDA) {
+        // Convert CUDA frame to NV12
+        AVFrame* nv12Frame = av_frame_alloc();
+        nv12Frame->format = AV_PIX_FMT_NV12;
+        nv12Frame->width = inputFrame->width;
+        nv12Frame->height = inputFrame->height;
+
+        // Transfer CUDA frame to NV12
+        av_hwframe_transfer_data(nv12Frame, inputFrame, 0);
+        nv12Frame->pts = inputFrame->pts;  // Carry over the PTS
+        frameToEncode = nv12Frame;
+    }
+    else if (inputFrame->format == AV_PIX_FMT_RGB24) {
+        // Convert RGB frame to NV12
+        frameToEncode = av_frame_alloc();
+        frameToEncode->format = AV_PIX_FMT_NV12;
+        frameToEncode->width = inputFrame->width;
+        frameToEncode->height = inputFrame->height;
+        av_frame_get_buffer(frameToEncode, 32);
+
+        // Convert RGB24 to NV12
+        sws_scale(swsCtx, inputFrame->data, inputFrame->linesize, 0, height,
+            frameToEncode->data, frameToEncode->linesize);
+        frameToEncode->pts = inputFrame->pts;  // Carry over the PTS
+    }
+    else if (inputFrame->format == AV_PIX_FMT_NV12) {
+        frameToEncode = av_frame_clone(inputFrame);  // Directly use NV12 frame
+        frameToEncode->pts = inputFrame->pts;  // Carry over the PTS
+    }
+    else {
+        std::cerr << "Error: Unsupported pixel format: " << av_get_pix_fmt_name((AVPixelFormat)inputFrame->format) << std::endl;
         return;
     }
 
-    // Convert the input frame (RGB) to YUV420P
-    sws_scale(swsCtx, inputFrame->data, inputFrame->linesize, 0, height,
-        frame->data, frame->linesize);
+    std::unique_lock<std::mutex> lock(mtx);
+    frameQueue.push(frameToEncode);  // Add the frame to the queue
+    lock.unlock();
+    cv.notify_one();  // Notify the writer thread that a new frame is available
+}
 
-    // Set the correct PTS value for the frame
-    frame->pts = pts;  // Monotonically increasing PTS
-    pts++;  // Increment the PTS for the next frame
+inline void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
+    if (!inputFrame || !inputFrame->data[0]) {
+        std::cerr << "Error: Invalid input frame or uninitialized data pointers." << std::endl;
+        return;
+    }
 
-    // Encode the frame
-    int ret = avcodec_send_frame(codecCtx, frame);
+    // Ensure the frame resolution matches the encoder
+    if (inputFrame->width != codecCtx->width || inputFrame->height != codecCtx->height) {
+        std::cerr << "Error: Frame resolution does not match codec context." << std::endl;
+        return;
+    }
+
+    // Ensure the output frame is writable
+    if (av_frame_make_writable(frame) < 0) {
+        std::cerr << "Error: Could not make frame writable." << std::endl;
+        return;
+    }
+
+    // Ensure the correct PTS is set
+    if (inputFrame->pts == AV_NOPTS_VALUE) {
+        inputFrame->pts = pts++;
+    }
+
+    // Send the frame to the encoder
+    int ret = avcodec_send_frame(codecCtx, inputFrame);
     if (ret < 0) {
-        std::cerr << "Error sending frame for encoding: " << ret << std::endl;
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_make_error_string(errbuf, AV_ERROR_MAX_STRING_SIZE, ret);
+        std::cerr << "Error sending frame for encoding: " << errbuf << std::endl;
         return;
     }
 
@@ -159,23 +206,28 @@ void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
             break;
         }
         else if (ret < 0) {
-            std::cerr << "Error encoding frame: " << ret << std::endl;
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_make_error_string(errbuf, AV_ERROR_MAX_STRING_SIZE, ret);
+            std::cerr << "Error encoding frame: " << errbuf << std::endl;
             return;
         }
 
         // Rescale PTS and DTS to match the stream's time base
         packet->pts = av_rescale_q(packet->pts, codecCtx->time_base, stream->time_base);
-        packet->dts = packet->pts;  // Ensure DTS is monotonic by setting it to PTS
+        packet->dts = packet->pts;
         packet->duration = av_rescale_q(packet->duration, codecCtx->time_base, stream->time_base);
 
         // Write the encoded packet to the output file
         packet->stream_index = stream->index;
         av_interleaved_write_frame(formatCtx, packet);
-        av_packet_unref(packet);  // Free the packet
+        av_packet_unref(packet);  // Free the packet after writing
+
+        // Flush the format context to force writing to disk
+        avio_flush(formatCtx->pb);
     }
 }
 
-void FFmpegWriter::finalize() {
+inline void FFmpegWriter::finalize() {
     doneReadingFrames = true;  // Indicate that no more frames will be added
     cv.notify_all();  // Wake up the writer thread to finish processing
 
@@ -183,51 +235,20 @@ void FFmpegWriter::finalize() {
         writerThread.join();  // Wait for the writer thread to finish
     }
 
-    std::cout << "Finalizing the writer..." << std::endl;
-
-    if (!formatCtx || !codecCtx) {
-        std::cerr << "Error: Invalid format or codec context during finalization." << std::endl;
-        return;
-    }
-
     // Flush remaining packets by sending a NULL frame to the encoder
-    if (codecCtx) {
-        int ret = avcodec_send_frame(codecCtx, nullptr);  // Flush the encoder
-        while (ret >= 0) {
-            ret = avcodec_receive_packet(codecCtx, packet);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                break;
-            }
-            else if (ret < 0) {
-                std::cerr << "Error receiving packet during finalization: " << ret << std::endl;
-                return;
-            }
-
-            // Ensure the remaining frames are properly rescaled and written
-            packet->pts = av_rescale_q(packet->pts, codecCtx->time_base, stream->time_base);
-            packet->dts = packet->pts;  // Force DTS to be the same as PTS for the remaining packets
-            packet->duration = av_rescale_q(packet->duration, codecCtx->time_base, stream->time_base);
-            packet->stream_index = stream->index;
-
-            // Write the final packets to the output file
-            av_interleaved_write_frame(formatCtx, packet);
-            av_packet_unref(packet);
-        }
+    avcodec_send_frame(codecCtx, nullptr);
+    while (avcodec_receive_packet(codecCtx, packet) >= 0) {
+        packet->pts = av_rescale_q(packet->pts, codecCtx->time_base, stream->time_base);
+        packet->dts = packet->pts;
+        packet->duration = av_rescale_q(packet->duration, codecCtx->time_base, stream->time_base);
+        packet->stream_index = stream->index;
+        av_interleaved_write_frame(formatCtx, packet);
+        av_packet_unref(packet);
     }
 
-    // Write the trailer to finalize the file
-    if (formatCtx && formatCtx->pb) {
-        int ret = av_write_trailer(formatCtx);
-        if (ret < 0) {
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_make_error_string(errbuf, AV_ERROR_MAX_STRING_SIZE, ret);
-            std::cerr << "Error writing trailer: " << errbuf << std::endl;
-        }
-        else {
-            std::cout << "Trailer written successfully." << std::endl;
-        }
-    }
+    av_write_trailer(formatCtx);  // Write the trailer to finalize the file
 
+    // Close output
     if (formatCtx && formatCtx->pb) {
         avio_closep(&formatCtx->pb);
     }
@@ -255,9 +276,7 @@ void FFmpegWriter::finalize() {
     std::cout << "Finalization complete." << std::endl;
 }
 
-
-FFmpegWriter::~FFmpegWriter() {
-    //finalize();
+inline FFmpegWriter::~FFmpegWriter() {
     if (swsCtx) {
         sws_freeContext(swsCtx);
     }
