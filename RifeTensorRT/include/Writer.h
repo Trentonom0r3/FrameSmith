@@ -67,7 +67,7 @@ inline FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, 
 
     // Use CRF for variable bitrate
     av_opt_set(codecCtx->priv_data, "crf", "23", 0);  // Adjust CRF value
-    av_opt_set(codecCtx->priv_data, "preset", "p4", 0);  // Use p1-p7 preset for NVENC
+    av_opt_set(codecCtx->priv_data, "preset", "p1", 0);  // Use p1-p7 preset for NVENC
     av_opt_set(codecCtx->priv_data, "tune", "ll", 0);  // Tune for low-latency
 
     // Use multiple threads for encoding (limited to 16)

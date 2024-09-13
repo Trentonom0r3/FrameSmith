@@ -2,16 +2,14 @@
 
 #include <string>
 #include <iostream>
-#include <thread>     // For hardware concurrency
-#include <algorithm>  // For std::min
+#include <thread>
+#include <algorithm>
 #include <torch/torch.h>
 #include <cuda_runtime.h>
 
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
-#include <libavutil/imgutils.h>
 #include <libavutil/hwcontext.h>
 }
 
@@ -19,37 +17,39 @@ class FFmpegReader {
 public:
     FFmpegReader(const std::string& inputFilePath);
     ~FFmpegReader();
-    bool readFrame(AVFrame*& frameOut);
+    bool readFrame(AVFrame* frameOut);
     int getWidth();
     int getHeight();
     double getFPS();
-    torch::Tensor avframe_to_tensor(AVFrame* gpu_frame);
 
-    //private:
+private:
     AVFormatContext* formatCtx = nullptr;
     AVCodecContext* codecCtx = nullptr;
     AVFrame* frame = nullptr;
-    AVPacket* packet = nullptr;   // Reuse AVPacket across calls
-    AVBufferRef* hw_device_ctx = nullptr; // Hardware device context (CUDA)
+    AVFrame* frameOut = nullptr;
+    AVPacket* packet = nullptr;
+    AVBufferRef* hw_device_ctx = nullptr;
     int videoStreamIndex = -1;
-    int width, height;
-    double fps;
+    int width = 0, height = 0;
+    double fps = 0.0;
+
+    static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts);
 };
 
 FFmpegReader::FFmpegReader(const std::string& inputFilePath) {
-    // Initialize FFmpeg
-
-    // Initialize the hardware device (CUDA)
+    // Initialize FFmpeg and hardware device
     int err = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
     if (err < 0) {
-        std::cerr << "Failed to create CUDA device context" << std::endl;
+        char errBuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(err, errBuf, sizeof(errBuf));
+        std::cerr << "Failed to create CUDA device context: " << errBuf << std::endl;
         throw std::runtime_error("Failed to create CUDA device context.");
     }
 
-    // Open the input file and check for errors
+    // Open input file
     int ret = avformat_open_input(&formatCtx, inputFilePath.c_str(), nullptr, nullptr);
     if (ret < 0) {
-        char errBuf[256];
+        char errBuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errBuf, sizeof(errBuf));
         std::cerr << "Could not open input file: " << errBuf << std::endl;
         throw std::runtime_error("Failed to open input file.");
@@ -62,8 +62,8 @@ FFmpegReader::FFmpegReader(const std::string& inputFilePath) {
         throw std::runtime_error("Failed to find stream info.");
     }
 
-    // Find the video stream index
-    for (int i = 0; i < formatCtx->nb_streams; i++) {
+    // Find the video stream
+    for (unsigned int i = 0; i < formatCtx->nb_streams; i++) {
         if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             videoStreamIndex = i;
             break;
@@ -76,85 +76,122 @@ FFmpegReader::FFmpegReader(const std::string& inputFilePath) {
     }
 
     AVCodecParameters* codecPar = formatCtx->streams[videoStreamIndex]->codecpar;
-    const AVCodec* codec = avcodec_find_decoder(codecPar->codec_id);
+    const AVCodec* codec = avcodec_find_decoder_by_name("h264_cuvid"); // Use appropriate decoder
+    if (!codec) {
+        std::cerr << "Hardware decoder not found." << std::endl;
+        throw std::runtime_error("Failed to find hardware decoder.");
+    }
+
     codecCtx = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(codecCtx, codecPar);
 
-    // Set the hardware device context for CUDA decoding
+    // Set hardware device context
     codecCtx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
 
-    // Enable multithreading
-    codecCtx->thread_count = std::min(16, static_cast<int>(std::thread::hardware_concurrency()));
-    codecCtx->thread_type = FF_THREAD_FRAME;  // Use frame threading for better performance
+    // Set get_format callback
+    codecCtx->get_format = get_hw_format;
 
-    avcodec_open2(codecCtx, codec, nullptr);
+    // Open codec
+    ret = avcodec_open2(codecCtx, codec, nullptr);
+    if (ret < 0) {
+        char errBuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errBuf, sizeof(errBuf));
+        std::cerr << "Failed to open codec: " << errBuf << std::endl;
+        throw std::runtime_error("Failed to open codec.");
+    }
 
-    // Allocate frame and reusable packet
+    // Allocate frames and packet
     frame = av_frame_alloc();
+    frameOut = av_frame_alloc();
     packet = av_packet_alloc();
 
-    // Set the video dimensions
+    // Get video properties
     width = codecCtx->width;
     height = codecCtx->height;
     fps = av_q2d(formatCtx->streams[videoStreamIndex]->avg_frame_rate);
 }
 
-bool FFmpegReader::readFrame(AVFrame*& frameOut) {
+enum AVPixelFormat FFmpegReader::get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
+    for (const enum AVPixelFormat* p = pix_fmts; *p != -1; p++) {
+        if (*p == AV_PIX_FMT_CUDA) {
+            return *p;
+        }
+    }
+    std::cerr << "Failed to get HW surface format." << std::endl;
+    return AV_PIX_FMT_NONE;
+}
+
+bool FFmpegReader::readFrame(AVFrame* frameOut) {
     av_frame_unref(frame);
     av_frame_unref(frameOut);
-    bool endOfStream = false;
+    int ret;
 
-    while (!endOfStream) {
-        int ret = av_read_frame(formatCtx, packet);
-        if (ret >= 0) {
-            if (packet->stream_index == videoStreamIndex) {
-                ret = avcodec_send_packet(codecCtx, packet);
-                av_packet_unref(packet);  // Unref the packet but reuse its buffer
+    while (true) {
+        ret = av_read_frame(formatCtx, packet);
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                // Flush decoder
+                ret = avcodec_send_packet(codecCtx, nullptr);
                 if (ret < 0) {
-                    std::cerr << "Error sending packet: " << ret << std::endl;
+                    char errBuf[AV_ERROR_MAX_STRING_SIZE];
+                    av_strerror(ret, errBuf, sizeof(errBuf));
+                    std::cerr << "Error sending flush packet: " << errBuf << std::endl;
                     return false;
                 }
-
-                ret = avcodec_receive_frame(codecCtx, frame);
-                if (ret == 0) {
-                    if (frame->format == AV_PIX_FMT_CUDA) {
-                        // Frame is already on the GPU in CUDA memory
-                        frameOut = av_frame_alloc();
-                        av_frame_ref(frameOut, frame);
-                    }
-                    else {
-                        std::cerr << "Frame is not in CUDA format." << std::endl;
-                        return false;
-                    }
-                    return true;
-                }
-                else if (ret == AVERROR(EAGAIN)) {
-                    continue;
-                }
-                else if (ret == AVERROR_EOF) {
-                    endOfStream = true;
-                }
+            }
+            else {
+                char errBuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errBuf, sizeof(errBuf));
+                std::cerr << "Error reading frame: " << errBuf << std::endl;
+                return false;
             }
         }
-        else if (ret == AVERROR_EOF) {
-            avcodec_send_packet(codecCtx, nullptr);  // Send a NULL packet to flush
+        else {
+            if (packet->stream_index == videoStreamIndex) {
+                ret = avcodec_send_packet(codecCtx, packet);
+                if (ret < 0) {
+                    char errBuf[AV_ERROR_MAX_STRING_SIZE];
+                    av_strerror(ret, errBuf, sizeof(errBuf));
+                    std::cerr << "Error sending packet: " << errBuf << std::endl;
+                    return false;
+                }
+            }
+            av_packet_unref(packet);
+        }
+
+        // Receive frames from decoder
+        while (true) {
             ret = avcodec_receive_frame(codecCtx, frame);
-            if (ret == 0) {
-                frameOut = av_frame_alloc();
+            if (ret == AVERROR(EAGAIN)) {
+                break; // Need more packets
+            }
+            else if (ret == AVERROR_EOF) {
+                return false; // End of stream
+            }
+            else if (ret < 0) {
+                char errBuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errBuf, sizeof(errBuf));
+                std::cerr << "Error receiving frame: " << errBuf << std::endl;
+                return false;
+            }
+
+            if (frame->format == AV_PIX_FMT_CUDA) {
                 av_frame_ref(frameOut, frame);
                 return true;
             }
-            endOfStream = true;
+            else {
+                std::cerr << "Frame is not in CUDA format." << std::endl;
+                return false;
+            }
         }
-        else {
-            std::cerr << "Error reading frame: " << ret << std::endl;
-            return false;
+
+        if (ret == AVERROR_EOF) {
+            return false; // No more frames
         }
     }
 
     return false;
 }
-
 
 int FFmpegReader::getWidth() { return width; }
 int FFmpegReader::getHeight() { return height; }
@@ -162,6 +199,7 @@ double FFmpegReader::getFPS() { return fps; }
 
 FFmpegReader::~FFmpegReader() {
     av_frame_free(&frame);
+    av_frame_free(&frameOut);
     av_packet_free(&packet);
     avcodec_free_context(&codecCtx);
     avformat_close_input(&formatCtx);
