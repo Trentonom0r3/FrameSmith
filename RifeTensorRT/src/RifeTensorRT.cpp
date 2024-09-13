@@ -492,31 +492,30 @@ void RifeTensorRT::run(AVFrame* inputFrame, FFmpegWriter& writer) {
         // Copy the NV12 tensor data back into the interpolated frame
 
         // Copy Y plane
-        cudaMemcpy2DAsync(
+        cudaMemcpy2D(
             interpolatedFrame->data[0],             // Destination pointer
             interpolatedFrame->linesize[0],         // Destination pitch (line size)
             nv12_tensor.data_ptr<uint8_t>(),        // Source pointer (Y plane)
             width * sizeof(uint8_t),                // Source pitch
             width * sizeof(uint8_t),                // Width of the copied region
             height,                                 // Height of the copied region
-            cudaMemcpyDeviceToDevice,               // Copy kind
-            writestream													  // Stream for asynchronous copy
+            cudaMemcpyDeviceToDevice                // Copy kind
         );
 
         // Copy UV plane
-        cudaMemcpy2DAsync(
+        cudaMemcpy2D(
             interpolatedFrame->data[1],                                     // Destination pointer
             interpolatedFrame->linesize[1],                                 // Destination pitch (line size)
             nv12_tensor.data_ptr<uint8_t>() + (width * height),             // Source pointer (UV plane)
             width * sizeof(uint8_t),                                        // Source pitch
             width * sizeof(uint8_t),                                        // Width of the copied region
             height / 2,                                                     // Height of the copied region (UV plane is half the height)
-            cudaMemcpyDeviceToDevice,                                        // Copy kind
-            writestream													  // Stream for asynchronous copy
+            cudaMemcpyDeviceToDevice                                        // Copy kind
         );
 
-        // Add the frame to the writer
-        writer.addFrame(interpolatedFrame);
+        if (!benchmarkMode) {
+            writer.addFrame(interpolatedFrame);
+        }
     }
 
     if (!benchmarkMode) {
