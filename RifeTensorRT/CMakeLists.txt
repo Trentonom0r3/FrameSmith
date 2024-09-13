@@ -57,7 +57,7 @@ else()
 endif()
 
 find_package(Torch REQUIRED)
-find_package(OpenCV REQUIRED)  # Add this line to find OpenCV
+#find_package(OpenCV REQUIRED)  # Add this line to find OpenCV
 # Find CURL
 find_package(CURL REQUIRED)
 
@@ -90,7 +90,7 @@ if(WIN32)
         ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY}
         ${SWRESAMPLE_LIBRARY}
-        ${OpenCV_LIBS}  # Link OpenCV libraries
+        # ${OpenCV_LIBS}  # Link OpenCV libraries
         CURL::libcurl
         protobuf::libprotobuf
         "${TENSORRT_DIR}/lib/nvinfer_10${LIB_SUFFIX}"
@@ -121,7 +121,7 @@ elseif(UNIX)
         ${TENSORRT_DIR}/lib/libnvinfer${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvinfer_plugin${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvonnxparser${LIB_SUFFIX}
-        ${OpenCV_LIBS}  # Link OpenCV libraries for UNIX
+        #${OpenCV_LIBS}  # Link OpenCV libraries for UNIX
     )
 endif()
 
