@@ -10,7 +10,7 @@
 // Helper to synchronize CUDA stream after batchSize frames
 void synchronizeStreams(RifeTensorRT& rifeTensorRT) {
     cudaStreamSynchronize(rifeTensorRT.getStream());  // Synchronize inference stream
-    cudaStreamSynchronize(rifeTensorRT.getWriteStream());  // Synchronize write stream
+    //cudaStreamSynchronize(rifeTensorRT.getWriteStream());  // Synchronize write stream
 }
 
 void readAndProcessFrames(FFmpegReader& reader, FFmpegWriter* writer, RifeTensorRT& rifeTensorRT, int batchSize, bool benchmarkMode, int& frameCount) {
