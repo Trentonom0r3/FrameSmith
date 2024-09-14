@@ -11,7 +11,7 @@
 #include <Writer.h>
 #include <npp.h>
 #include <nppi.h>
-#include <nppi_color_conversion.h> // Add this line
+#include <nppi_color_conversion.h>
 #include <nppi_support_functions.h>
 
 nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
@@ -19,7 +19,6 @@ nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     dims.nbDims = sizes.size();
     for (int i = 0; i < dims.nbDims; ++i) {
         dims.d[i] = sizes[i];
-
     }
     return dims;
 }
@@ -97,9 +96,23 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
         return;
     }
 
+    // Allocate interpolatedFrame and get buffer
     interpolatedFrame = av_frame_alloc();
     interpolatedFrame->hw_frames_ctx = av_buffer_ref(hw_frames_ctx); // Set the CUDA frames context
+    interpolatedFrame->format = AV_PIX_FMT_NV12;
+    interpolatedFrame->width = width;
+    interpolatedFrame->height = height;
 
+    int err = av_hwframe_get_buffer(hw_frames_ctx, interpolatedFrame, 0);
+    if (err < 0) {
+        std::cerr << "Failed to allocate hardware frame buffer" << std::endl;
+        return;
+    }
+
+    for (int i = 0; i < interpolateFactor - 1; ++i) {
+        auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+        timestep_tensors.push_back(timestep);
+    }
 }
 
 RifeTensorRT::~RifeTensorRT() {
@@ -109,7 +122,6 @@ RifeTensorRT::~RifeTensorRT() {
     av_buffer_unref(&hw_frames_ctx);
     av_buffer_unref(&hw_device_ctx);
 }
-
 
 // Method to handle model loading and initialization
 void RifeTensorRT::handleModel() {
@@ -150,8 +162,11 @@ void RifeTensorRT::handleModel() {
     v_plane = torch::empty({ height / 2, width / 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
     uv_flat = torch::empty({ u_plane.numel() * 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
     uv_plane = torch::empty({ height / 2, width }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    u_flat = u_plane.view(-1);
+    v_flat = v_plane.view(-1);
+    intermediate_tensor = torch::empty({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
 
-
+    // Bindings
     bindings = { dummyInput.data_ptr(), dummyOutput.data_ptr() };
 
     // Set Tensor Addresses and Input Shapes
@@ -160,6 +175,7 @@ void RifeTensorRT::handleModel() {
         void* bindingPtr = (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) ?
             static_cast<void*>(dummyInput.data_ptr()) :
             static_cast<void*>(dummyOutput.data_ptr());
+
         bool setaddyinfo = context->setTensorAddress(tensorName, bindingPtr);
 
         if (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) {
@@ -176,12 +192,7 @@ void RifeTensorRT::handleModel() {
     // Set the input and output tensor addresses in the TensorRT context
     context->setTensorAddress("input", dummyInput.data_ptr());
     context->setTensorAddress("output", dummyOutput.data_ptr());
-
 }
-
-#include <npp.h>
-#include <nppi.h>
-
 
 // Define error handling macros
 #define NPP_CHECK_NPP(func) { \
@@ -192,14 +203,12 @@ void RifeTensorRT::handleModel() {
     } \
 }
 
-
-torch::Tensor RifeTensorRT::avframe_nv12_to_rgb_npp(AVFrame* gpu_frame) {
+void RifeTensorRT::avframe_nv12_to_rgb_npp(AVFrame* gpu_frame) {
     int width = gpu_frame->width;
     int height = gpu_frame->height;
 
     if (gpu_frame->format != AV_PIX_FMT_CUDA) {
         std::cerr << "Frame is not in CUDA format." << std::endl;
-        return torch::Tensor();
     }
 
     int nYUVPitch = gpu_frame->linesize[0];
@@ -214,37 +223,31 @@ torch::Tensor RifeTensorRT::avframe_nv12_to_rgb_npp(AVFrame* gpu_frame) {
         oSizeROI
     ));
 
-    return rgb_tensor.unsqueeze(0).permute({ 0, 3, 1, 2 }).contiguous();
+    intermediate_tensor = rgb_tensor.unsqueeze(0).permute({ 0, 3, 1, 2 }).contiguous();
 }
 
-
-
-// Preprocess the frame: normalize and permute dimensions (NHWC to NCHW)
 // Preprocess the frame: normalize pixel values
-at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
-    // Since the input tensor is already [1, 3, H, W] (NCHW), no need to permute
-   // showTensorAsImage(frame.squeeze(0));
-    return frame.to(half ? torch::kFloat16 : torch::kFloat32)
-        .div_(255.0)              // Normalize pixel values
-        .clamp_(0.0, 1.0)         // Clamp to [0, 1]
-        .contiguous();           // Ensure memory is contiguous
+void RifeTensorRT::processFrame(at::Tensor& frame) const {
+    frame = frame.to(half ? torch::kFloat16 : torch::kFloat32)
+        .div_(255.0)
+        .clamp_(0.0, 1.0)
+        .contiguous();
 }
 
-torch::Tensor RifeTensorRT::avframe_rgb_to_nv12_npp(at::Tensor rgb_tensor) {
+void RifeTensorRT::avframe_rgb_to_nv12_npp(at::Tensor output) {
     // Ensure the input tensor is contiguous
     // Set up destination pointers and strides
     Npp8u* pDst[3] = { y_plane.data_ptr<Npp8u>(), u_plane.data_ptr<Npp8u>(), v_plane.data_ptr<Npp8u>() };
     int rDstStep[3] = { static_cast<int>(y_plane.stride(0)), static_cast<int>(u_plane.stride(0)), static_cast<int>(v_plane.stride(0)) };
 
     // Source RGB data and step
-    Npp8u* pSrc = rgb_tensor.data_ptr<Npp8u>();
-    int nSrcStep = rgb_tensor.stride(0);
+    Npp8u* pSrc = output.data_ptr<Npp8u>();
+    int nSrcStep = output.stride(0);
 
     // Define ROI
     NppiSize oSizeROI = { width, height };
 
     // Perform RGB to YUV420 conversion (planar)
- // Perform RGB to YUV420 conversion (planar)
     NPP_CHECK_NPP(nppiRGBToYUV420_8u_C3P3R(
         pSrc,
         nSrcStep,
@@ -255,9 +258,6 @@ torch::Tensor RifeTensorRT::avframe_rgb_to_nv12_npp(at::Tensor rgb_tensor) {
 
     // Interleave U and V planes on GPU
     // Flatten U and V planes
-    torch::Tensor u_flat = u_plane.view(-1);
-    torch::Tensor v_flat = v_plane.view(-1);
-
     // Reuse uv_flat
     // Interleave U and V values
     uv_flat.index_put_({ torch::indexing::Slice(0, torch::indexing::None, 2) }, u_flat);
@@ -266,19 +266,21 @@ torch::Tensor RifeTensorRT::avframe_rgb_to_nv12_npp(at::Tensor rgb_tensor) {
     // Reshape UV data back to 2D
     uv_plane = uv_flat.view({ height / 2, width });
 
-    // Concatenate Y plane and UV plane into NV12 tensor
-    torch::Tensor nv12_tensor = torch::cat({ y_plane.view(-1), uv_plane.view(-1) }, 0);
-
-    return nv12_tensor;
+    nv12_tensor = torch::cat({ y_plane.view(-1), uv_plane.view(-1) }, 0);
 }
 
 void RifeTensorRT::run(AVFrame* inputFrame) {
+    // [Line 1] Static variables for graph state
+    static bool graphInitialized = false;
+    static cudaGraph_t graph;
+    static cudaGraphExec_t graphExec;
 
-    // Convert the input AVFrame (NV12) to a Torch tensor (RGB) using NPP
-    at::Tensor processedTensor = processFrame(avframe_nv12_to_rgb_npp(inputFrame));
+    // [Line 5] Update input tensors with new data
+    avframe_nv12_to_rgb_npp(inputFrame);
+    processFrame(intermediate_tensor);
 
     if (firstRun) {
-        I0.copy_(processedTensor, true);
+        I0.copy_(intermediate_tensor, true);
         firstRun = false;
         if (!benchmarkMode) {
             writer.addFrame(inputFrame);
@@ -286,74 +288,73 @@ void RifeTensorRT::run(AVFrame* inputFrame) {
         return;
     }
 
-    // Alternate between I0 and I1 for double-buffering
+    // [Line 15] Alternate between I0 and I1
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
-    destination.copy_(processedTensor, true);
+    destination.copy_(intermediate_tensor, true);
+
+    // [Line 20] Prepare input tensors
+    dummyInput.slice(1, 0, 3).copy_(source, true);
+    dummyInput.slice(1, 3, 6).copy_(destination, true);
 
     for (int i = 0; i < interpolateFactor - 1; ++i) {
-        auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+        // [Line 25] Update timestep in dummyInput
+        dummyInput.slice(1, 6, 7).copy_(timestep_tensors[i], true);
 
-        // New code using slicing and copying
-        dummyInput.slice(1, 0, 3).copy_(source);
-        dummyInput.slice(1, 3, 6).copy_(destination);
-        dummyInput.select(1, 6).fill_((i + 1) * 1.0 / interpolateFactor);
+        // [Line 28] Enqueue inference
+        if (!graphInitialized) {
+            // [Line 30] Begin graph capture
+            cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
 
-        if (!context->enqueueV3(stream)) {
-            std::cerr << "Error during TensorRT inference!" << std::endl;
-            return;
+            // [Line 32] Enqueue inference
+            context->enqueueV3(stream);
+
+            // [Line 35] End graph capture
+            cudaStreamEndCapture(stream, &graph);
+
+            // [Line 37] Instantiate the graph
+            cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0);
+
+            graphInitialized = true;
         }
 
-        // Convert the result tensor back to NV12 format
-        at::Tensor output = dummyOutput.squeeze(0).permute({ 1, 2, 0 })
+        // [Line 42] Launch the graph
+        cudaGraphLaunch(graphExec, stream);
+
+        // [Line 45] Synchronize the stream
+       // cudaStreamSynchronize(stream);
+
+        // [Line 48] Post-processing with PyTorch
+        rgb_tensor = dummyOutput.squeeze(0).permute({ 1, 2, 0 })
             .mul(255.0).clamp(0, 255).to(torch::kU8).contiguous();
 
-        // Convert the output tensor (RGB) to NV12
-        at::Tensor nv12_tensor = avframe_rgb_to_nv12_npp(output);
+        avframe_rgb_to_nv12_npp(rgb_tensor);
 
-        // Check if nv12_tensor is valid
-        if (!nv12_tensor.defined()) {
-            std::cerr << "Failed to convert RGB to NV12." << std::endl;
-            return;
-        }
-
-        // Allocate the frame
-        av_frame_unref(interpolatedFrame); // Unreference the frame before reusing
-        interpolatedFrame->format = AV_PIX_FMT_NV12;
-        interpolatedFrame->width = width;
-        interpolatedFrame->height = height;
-
-        if (av_hwframe_get_buffer(hw_frames_ctx, interpolatedFrame, 0) < 0) {
-            std::cerr << "Error allocating frame" << std::endl;
-            return;
-        }
-
-        // Copy the NV12 tensor data back into the interpolated frame
-
-        // Copy Y plane
+        // [Line 54] Copy NV12 data into interpolated frame
         cudaMemcpy2DAsync(
-            interpolatedFrame->data[0],             // Destination pointer
-            interpolatedFrame->linesize[0],         // Destination pitch (line size)
-            nv12_tensor.data_ptr<uint8_t>(),        // Source pointer (Y plane)
-            width * sizeof(uint8_t),                // Source pitch
-            width * sizeof(uint8_t),                // Width of the copied region
-            height,                                 // Height of the copied region
-            cudaMemcpyDeviceToDevice ,               // Copy kind
-            writestream							 // Stream
+            interpolatedFrame->data[0],
+            interpolatedFrame->linesize[0],
+            nv12_tensor.data_ptr<uint8_t>(),
+            width * sizeof(uint8_t),
+            width * sizeof(uint8_t),
+            height,
+            cudaMemcpyDeviceToDevice,
+            writestream
         );
 
-        // Copy UV plane
         cudaMemcpy2DAsync(
-            interpolatedFrame->data[1],                                     // Destination pointer
-            interpolatedFrame->linesize[1],                                 // Destination pitch (line size)
-            nv12_tensor.data_ptr<uint8_t>() + (width * height),             // Source pointer (UV plane)
-            width * sizeof(uint8_t),                                        // Source pitch
-            width * sizeof(uint8_t),                                        // Width of the copied region
-            height / 2,                                                     // Height of the copied region (UV plane is half the height)
-            cudaMemcpyDeviceToDevice,               // Copy kind
-            writestream							 // Stream
+            interpolatedFrame->data[1],
+            interpolatedFrame->linesize[1],
+            nv12_tensor.data_ptr<uint8_t>() + (width * height),
+            width * sizeof(uint8_t),
+            width * sizeof(uint8_t),
+            height / 2,
+            cudaMemcpyDeviceToDevice,
+            writestream
         );
 
+        // [Line 66] Synchronize the write stream
+       // cudaStreamSynchronize(writestream);
 
         if (!benchmarkMode) {
             writer.addFrame(interpolatedFrame);

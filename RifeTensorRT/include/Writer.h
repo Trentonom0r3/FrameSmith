@@ -96,6 +96,7 @@ inline FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, 
         SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);  // Fast scaling algorithm
 
     writerThread = std::thread(&FFmpegWriter::writeThread, this);
+    writerThread.detach();  // Detach the writer thread
 }
 
 // Thread method for writing frames from the queue
