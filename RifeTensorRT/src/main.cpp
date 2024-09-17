@@ -11,7 +11,7 @@
 // Helper to synchronize CUDA stream after batchSize frames
 void synchronizeStreams(RifeTensorRT& rifeTensorRT) {
     cudaStreamSynchronize(rifeTensorRT.getStream());  // Synchronize inference stream
-    cudaStreamSynchronize(rifeTensorRT.writer.getStream());  // Synchronize the writer stream
+   // cudaStreamSynchronize(rifeTensorRT.getWriteStream());  // Synchronize write stream
 }
 
 void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, int batchSize, bool benchmarkMode, int& frameCount) {
@@ -86,8 +86,9 @@ int main(int argc, char** argv) {
     // Finalize the writer if not in benchmark mode4
     if (!benchmarkMode && writer != nullptr) {
         writer->finalize();
+        delete writer;
     }
-    delete writer;
+
     // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
