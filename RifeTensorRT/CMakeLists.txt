@@ -1,13 +1,20 @@
 cmake_minimum_required(VERSION 3.18)
 project(RifeTensorRT)
+add_definitions(-DTORCH_USE_CUDA_DSA=1)
 
 set(CMAKE_CXX_STANDARD 17)
 add_definitions(-w)
+# Source files
+set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp)
+
+# Create the executable
+add_executable(RifeTensorRT ${SOURCE_FILES} )
 
 if (MSVC)
     set(CMAKE_CXX_FLAGS_DEBUG "/MDd")  # Use dynamic debug runtime for Debug builds
     set(CMAKE_CXX_FLAGS_RELEASE "/MD") # Use dynamic release runtime for Release builds
 endif()
+
 
 # Enable verbose output for troubleshooting
 set(CMAKE_VERBOSE_MAKEFILE ON)
@@ -51,6 +58,16 @@ else()
 endif()
 
 find_package(Torch REQUIRED)
+#find_package(OpenCV REQUIRED)  # Add this line to find OpenCV
+# Find CURL
+find_package(CURL REQUIRED)
+
+# Link curl
+if(WIN32)
+    target_link_libraries(RifeTensorRT ${CURL_LIBRARIES})
+elseif(UNIX)
+    target_link_libraries(RifeTensorRT ${CURL_LIBRARIES})
+endif()
 
 include_directories(${FFMPEG_DIR}/include)
 link_directories(${FFMPEG_DIR}/lib)
@@ -62,13 +79,7 @@ find_library(SWSCALE_LIBRARY swscale HINTS "C:/Users/tjerf/vcpkg/installed/x64-w
 find_library(SWRESAMPLE_LIBRARY swresample HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
 
 # Include directories
-include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ ${TENSORRT_DIR}/include ${VCPKG_DIR}/include)
-
-# Source files
-set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp)
-
-# Create the executable
-add_executable(RifeTensorRT ${SOURCE_FILES})
+include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ concurrentqueue/ ${TENSORRT_DIR}/include ${VCPKG_DIR}/include ${OpenCV_INCLUDE_DIRS})
 
 # Link libraries
 if(WIN32)
@@ -80,6 +91,7 @@ if(WIN32)
         ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY}
         ${SWRESAMPLE_LIBRARY}
+        # ${OpenCV_LIBS}  # Link OpenCV libraries
         CURL::libcurl
         protobuf::libprotobuf
         "${TENSORRT_DIR}/lib/nvinfer_10${LIB_SUFFIX}"
@@ -87,6 +99,19 @@ if(WIN32)
         "${TENSORRT_DIR}/lib/nvonnxparser_10${LIB_SUFFIX}"
         "${TENSORRT_DIR}/lib/nvinfer_dispatch_10${LIB_SUFFIX}"
         "${TENSORRT_DIR}/lib/nvinfer_lean_10${LIB_SUFFIX}"
+
+        # NPP libraries
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppisu.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppitc.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/npps.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppc.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppial.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppicc.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppidei.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppif.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppig.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppim.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppist.lib"
     )
 elseif(UNIX)
     target_link_libraries(RifeTensorRT 
@@ -97,6 +122,7 @@ elseif(UNIX)
         ${TENSORRT_DIR}/lib/libnvinfer${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvinfer_plugin${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvonnxparser${LIB_SUFFIX}
+        #${OpenCV_LIBS}  # Link OpenCV libraries for UNIX
     )
 endif()
 
@@ -114,15 +140,4 @@ if(CUDA_FOUND)
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89"
     )
-
-endif()
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
-
-# Link curl
-if(WIN32)
-    target_link_libraries(RifeTensorRT "C:/Users/tjerf/vcpkg/installed/x64-windows/lib/libcurl${LIB_SUFFIX}")
-elseif(UNIX)
-    find_package(CURL REQUIRED)
-    target_link_libraries(RifeTensorRT ${CURL_LIBRARIES})
 endif()

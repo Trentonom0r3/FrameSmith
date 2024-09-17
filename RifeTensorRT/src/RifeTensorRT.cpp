@@ -8,47 +8,56 @@
 #include <trtHandler.h>
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <Writer.h>
+#include <npp.h>
+#include <nppi.h>
+#include <nppi_color_conversion.h>
+#include <nppi_support_functions.h>
+#include <future>
+
 
 nvinfer1::Dims toDims(const c10::IntArrayRef& sizes) {
     nvinfer1::Dims dims;
     dims.nbDims = sizes.size();
     for (int i = 0; i < dims.nbDims; ++i) {
         dims.d[i] = sizes[i];
-
     }
     return dims;
 }
 
-// Constructor: Initializes the TensorRT RIFE model
-RifeTensorRT::RifeTensorRT(
-    std::string interpolateMethod,
-    int interpolateFactor,
-    int width,
-    int height,
-    bool half,
-    bool ensemble
-) : interpolateMethod(interpolateMethod),
-interpolateFactor(interpolateFactor),
-width(width),
-height(height),
-half(half),
-ensemble(ensemble),
-firstRun(true),
-useI0AsSource(true),
-isFrameCached(false), // Initialize caching flag
-device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-stream(c10::cuda::getStreamFromPool(false, device.index())),
-cachedInterpolatedAVFrame(nullptr)
+// Constructor implementation with CUDA context setup
+RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor, int width, int height, bool half, bool ensemble, bool benchmark, FFmpegWriter& writer)
+    : interpolateMethod(interpolateMethod),
+    interpolateFactor(interpolateFactor),
+    width(width),
+    height(height),
+    half(half),
+    ensemble(ensemble),
+    firstRun(true),
+    useI0AsSource(true),
+    device(torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
+    benchmarkMode(benchmark),
+    writer(writer)
 {
-    if (width > 1920 && height > 1080 && half) {
-        std::cout << "UHD and fp16 are not compatible with RIFE, defaulting to fp32" << std::endl;
-        this->half = false;
-    }
-
+    // Initialize model and tensors
     handleModel();
-    // Create a tensor for the interpolation timestep
-    timestep = torch::full({ 1, 1, height, width }, 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
 
+    // Initialize CUDA streams
+    cudaStreamCreate(&stream);
+    cudaStreamCreate(&writestream);
+    writer.setStream(writestream);
+    for (int i = 0; i < interpolateFactor - 1; ++i) {
+        auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
+        timestep_tensors.push_back(timestep);
+    }
+}
+
+RifeTensorRT::~RifeTensorRT() {
+    cudaStreamDestroy(stream);
+    cudaStreamDestroy(writestream);
+  //  av_frame_free(&interpolatedFrame);
+   // av_buffer_unref(&hw_frames_ctx);
+   // av_buffer_unref(&hw_device_ctx);
 }
 
 // Method to handle model loading and initialization
@@ -84,7 +93,8 @@ void RifeTensorRT::handleModel() {
     I1 = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     dummyInput = torch::zeros({ 1, 7, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     dummyOutput = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-
+    rgb_tensor = torch::empty({ height, width, 3 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA)).contiguous();
+    // Bindings
     bindings = { dummyInput.data_ptr(), dummyOutput.data_ptr() };
 
     // Set Tensor Addresses and Input Shapes
@@ -93,6 +103,7 @@ void RifeTensorRT::handleModel() {
         void* bindingPtr = (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) ?
             static_cast<void*>(dummyInput.data_ptr()) :
             static_cast<void*>(dummyOutput.data_ptr());
+
         bool setaddyinfo = context->setTensorAddress(tensorName, bindingPtr);
 
         if (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) {
@@ -109,68 +120,77 @@ void RifeTensorRT::handleModel() {
     // Set the input and output tensor addresses in the TensorRT context
     context->setTensorAddress("input", dummyInput.data_ptr());
     context->setTensorAddress("output", dummyOutput.data_ptr());
-
 }
 
-// Preprocess frame and convert it to Torch tensor
-at::Tensor RifeTensorRT::processFrame(const at::Tensor& frame) const {
-    try {
-        auto processed = frame.to(dType, /*non_blocking=*/true, /*copy=*/true)
-            .permute({ 0, 3, 1, 2 })  // NHWC to NCHW
-            .div(255.0)               // Normalize to [0, 1]
-            .contiguous();
-        return processed;
-    }
-    catch (const c10::Error& e) {
-        std::cerr << "Error during processFrame: " << e.what() << std::endl;
-        throw; // Re-throw after logging
-    }
+// Preprocess the frame: normalize pixel values
+void RifeTensorRT::processFrame(at::Tensor& frame) const {
+    frame = frame.to(half ? torch::kFloat16 : torch::kFloat32)
+        .div_(255.0)
+        .clamp_(0.0, 1.0)
+        .contiguous();
 }
 
-// Run inference on an input frame and return the interpolated result asynchronously
-AVFrame* RifeTensorRT::run(AVFrame* rgbFrame, AVFrame* interpolatedFrame, cudaEvent_t& inferenceFinishedEvent) {
-    // Get raw CUDA stream from torch::cuda::CUDAStream for asynchronous execution.
-    c10::cuda::CUDAStreamGuard guard(stream);
-    cudaStream_t raw_stream = stream.stream();
 
-    // Ensure the AVFrame is writable before modifying it.
-    if (av_frame_make_writable(rgbFrame) < 0) {
-        std::cerr << "Cannot make AVFrame writable!" << std::endl;
-        return nullptr;
-    }
-
-    // Convert AVFrame to Torch tensor (assuming interleaved RGB format).
-    at::Tensor inputTensor = AVFrameToTensor(rgbFrame);
+void RifeTensorRT::run(at::Tensor input) {
+    // [Line 1] Static variables for graph state
+    static bool graphInitialized = false;
+    static cudaGraph_t graph;
+    static cudaGraphExec_t graphExec;
 
     if (firstRun) {
-        // On the first run, initialize the source frame.
-        I0.copy_(processFrame(inputTensor), true);
+        I0.copy_(input, true);
         firstRun = false;
-        interpolatedFrame = rgbFrame;
-        return interpolatedFrame;
+        if (!benchmarkMode) {
+            writer.addFrame(input);
+        }
+        return;
     }
 
-    // Use the source and destination buffers for double-buffering.
+    // [Line 15] Alternate between I0 and I1
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
+    destination.copy_(input, true);
 
-    // Copy the input frame to the destination buffer.
-    destination.copy_(processFrame(inputTensor), true);
+    // [Line 20] Prepare input tensors
+    dummyInput.slice(1, 0, 3).copy_(source, true);
+    dummyInput.slice(1, 3, 6).copy_(destination, true);
 
-    // Create a tensor for the interpolation timestep
-    // Prepare the input tensor for the interpolation (concatenating source, destination, and timestep)
-    dummyInput.copy_(torch::cat({ source, destination, timestep }, 1), true);
-    // Enqueue the inference on the raw CUDA stream (asynchronously)
-    if (!context->enqueueV3(raw_stream)) {
-        std::cerr << "Error during TensorRT inference!" << std::endl;
-        return nullptr;
+    for (int i = 0; i < interpolateFactor - 1; ++i) {
+        // [Line 25] Update timestep in dummyInput
+        dummyInput.slice(1, 6, 7).copy_(timestep_tensors[i], true);
+
+        // [Line 28] Enqueue inference
+        if (!graphInitialized) {
+            // [Line 30] Begin graph capture
+            cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+
+            // [Line 32] Enqueue inference
+            context->enqueueV3(stream);
+
+            // [Line 35] End graph capture
+            cudaStreamEndCapture(stream, &graph);
+
+            // [Line 37] Instantiate the graph
+            cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0);
+
+            graphInitialized = true;
+        }
+
+        // [Line 42] Launch the graph
+        cudaGraphLaunch(graphExec, stream);
+        rgb_tensor = dummyOutput;
+           // cudaStreamSynchronize(stream);
+
+            if (!benchmarkMode) {
+				writer.addFrame(rgb_tensor);
+			}
     }
 
-    // Record an event to notify when inference has completed
-    cudaEventRecord(inferenceFinishedEvent, raw_stream);
+    if (!benchmarkMode) {
+     writer.addFrame(input);
+    }
+   
+   // cudaStreamSynchronize(getWriteStream());  // Synchronize write stream
 
-    // Flip the source buffer flag for the next run.
     useI0AsSource = !useI0AsSource;
-    // Return the interpolated frame
-    return interpolatedFrame;
 }
