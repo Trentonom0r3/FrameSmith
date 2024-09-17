@@ -464,6 +464,7 @@ inline void FFmpegWriter::finalize() {
 }
 
 inline FFmpegWriter::~FFmpegWriter() {
+    cudaStreamDestroy(writestream);
     if (swsCtx) {
         sws_freeContext(swsCtx);
     }
