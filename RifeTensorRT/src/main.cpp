@@ -86,9 +86,8 @@ int main(int argc, char** argv) {
     // Finalize the writer if not in benchmark mode4
     if (!benchmarkMode && writer != nullptr) {
         writer->finalize();
-        delete writer;
     }
-
+    delete writer;
     // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
