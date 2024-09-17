@@ -7,27 +7,30 @@
 #include "Writer.h"  // Your FFmpegWriter class
 #include <cuda_runtime.h>
 
+
 // Helper to synchronize CUDA stream after batchSize frames
 void synchronizeStreams(RifeTensorRT& rifeTensorRT) {
     cudaStreamSynchronize(rifeTensorRT.getStream());  // Synchronize inference stream
-    cudaStreamSynchronize(rifeTensorRT.getWriteStream());  // Synchronize write stream
+   // cudaStreamSynchronize(rifeTensorRT.getWriteStream());  // Synchronize write stream
 }
 
 void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, int batchSize, bool benchmarkMode, int& frameCount) {
-    AVFrame* preAllocatedInputFrame = av_frame_alloc();
-    int batchCounter = 0;  // Counter for batching synchronization
-
-    while (reader.readFrame(preAllocatedInputFrame)) {
+    bool halfPrecision = true;
+    torch::Device device(torch::kCUDA);
+    torch::Dtype dtype = halfPrecision ? torch::kFloat16 : torch::kFloat32;
+    torch::Tensor frameTensor = torch::zeros({ 1, 3, rifeTensorRT.height, rifeTensorRT.width }, torch::TensorOptions().dtype(dtype).device(device).requires_grad(false));
+    
+    while (reader.readFrame(frameTensor)) {
         // Asynchronously run TensorRT inference on the frame
-        rifeTensorRT.run(preAllocatedInputFrame);
+        rifeTensorRT.run(frameTensor);
 
         frameCount++;
-        batchCounter++;
+       // batchCounter++;
 
 
     }
     synchronizeStreams(rifeTensorRT);  // Synchronize the last batch
-    av_frame_free(&preAllocatedInputFrame);  // Free the frame memory after done
+    //av_frame_free(&preAllocatedInputFrame);  // Free the frame memory after done
 }
 
 int main(int argc, char** argv) {
@@ -60,9 +63,10 @@ int main(int argc, char** argv) {
             return -1;
         }
     }
-
+    torch::Device device(torch::kCUDA);
+    bool halfPrecision = true;
     // Initialize FFmpeg-based video reader
-    FFmpegReader reader(inputVideoPath);
+    FFmpegReader reader(inputVideoPath, device, halfPrecision);
     int width = reader.getWidth();
     int height = reader.getHeight();
     double fps = reader.getFPS();
@@ -79,7 +83,7 @@ int main(int argc, char** argv) {
     // Directly call read and process function with CUDA stream-based concurrency
     readAndProcessFrames(reader, rifeTensorRT, batchSize, benchmarkMode, frameCount);
 
-    // Finalize the writer if not in benchmark mode
+    // Finalize the writer if not in benchmark mode4
     if (!benchmarkMode && writer != nullptr) {
         writer->finalize();
         delete writer;

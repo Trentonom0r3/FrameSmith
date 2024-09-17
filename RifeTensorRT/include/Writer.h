@@ -6,7 +6,10 @@
 #include <algorithm>  // std::min
 #include <thread>     // std::thread::hardware_concurrency()
 #include <atomic>
-
+#include <npp.h>
+#include <nppi.h>
+#include <nppi_color_conversion.h>
+#include <nppi_support_functions.h>
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -17,14 +20,54 @@ extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 }
 
+// Helper function to set up CUDA device context
+inline int init_cuda_context(AVBufferRef** hw_device_ctx) {
+    int err = av_hwdevice_ctx_create(hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+    if (err < 0) {
+        char err_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, err);
+        std::cerr << "Failed to create CUDA device context: " << err_buf << std::endl;
+        return err;
+    }
+    return 0;
+}
+
+// Helper function to set up CUDA frames context
+inline AVBufferRef* init_cuda_frames_ctx(AVBufferRef* hw_device_ctx, int width, int height, AVPixelFormat sw_format) {
+    AVBufferRef* hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
+    if (!hw_frames_ref) {
+        std::cerr << "Failed to create hardware frames context" << std::endl;
+        return nullptr;
+    }
+
+    AVHWFramesContext* frames_ctx = (AVHWFramesContext*)(hw_frames_ref->data);
+    frames_ctx->format = AV_PIX_FMT_CUDA;
+    frames_ctx->sw_format = sw_format;
+    frames_ctx->width = width;
+    frames_ctx->height = height;
+    frames_ctx->initial_pool_size = 20;
+
+    int err = av_hwframe_ctx_init(hw_frames_ref);
+    if (err < 0) {
+        char err_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, err);
+        std::cerr << "Failed to initialize hardware frame context: " << err_buf << std::endl;
+        av_buffer_unref(&hw_frames_ref);
+        return nullptr;
+    }
+
+    return hw_frames_ref;
+}
+
 class FFmpegWriter {
 public:
     FFmpegWriter(const std::string& outputFilePath, int width, int height, int fps);
     ~FFmpegWriter();
-    void addFrame(AVFrame* inputFrame);  // Add frame to the queue
+    void addFrame(at::Tensor inputTensor);  // Add frame to the queue
     void writeThread();  // Thread for writing frames
     void finalize();
-
+    void FFmpegWriter::avframe_rgb_to_nv12_npp(at::Tensor output);
+    void setStream(cudaStream_t stream) { writestream = stream; }
 private:
     AVFormatContext* formatCtx = nullptr;
     AVCodecContext* codecCtx = nullptr;
@@ -34,13 +77,18 @@ private:
     SwsContext* swsCtx = nullptr;
     int width, height, fps;
     int64_t pts = 0;
-
+    AVFrame* interpolatedFrame = nullptr;
+    cudaStream_t writestream;
+    AVBufferRef* hw_frames_ctx;
+    AVBufferRef* hw_device_ctx;
     // Threading components
     std::queue<AVFrame*> frameQueue;
     std::mutex mtx;
     std::condition_variable cv;
     std::atomic<bool> doneReadingFrames{ false };
     std::thread writerThread;
+    torch::Tensor y_plane, u_plane, v_plane, uv_flat,
+        uv_plane, u_flat, v_flat, nv12_tensor;
 
     void writeFrame(AVFrame* inputFrame);  // Internal method for writing frames
 };
@@ -90,14 +138,131 @@ inline FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, 
 
     packet = av_packet_alloc();
 
-    // Use faster scaling algorithm for RGB to NV12 conversion
-    swsCtx = sws_getContext(width, height, AV_PIX_FMT_RGB24,  // Source format
-        width, height, AV_PIX_FMT_NV12,  // Destination format (ensure YUV conversion)
-        SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);  // Fast scaling algorithm
+    y_plane = torch::empty({ height, width }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    u_plane = torch::empty({ height / 2, width / 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    v_plane = torch::empty({ height / 2, width / 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    uv_flat = torch::empty({ u_plane.numel() * 2 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    uv_plane = torch::empty({ height / 2, width }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA));
+    u_flat = u_plane.view(-1);
+    v_flat = v_plane.view(-1);
+
+   // cudaStreamCreate(&writestream);
+    // Initialize CUDA device context
+    if (init_cuda_context(&hw_device_ctx) < 0) {
+        std::cerr << "Failed to initialize CUDA context" << std::endl;
+        return;
+    }
+
+    // Initialize CUDA frames context
+    hw_frames_ctx = init_cuda_frames_ctx(hw_device_ctx, width, height, AV_PIX_FMT_NV12); // Change this based on your source format
+    if (!hw_frames_ctx) {
+        std::cerr << "Failed to initialize CUDA frames context" << std::endl;
+        return;
+    }
+
+    // Allocate interpolatedFrame and get buffer
+    interpolatedFrame = av_frame_alloc();
+    interpolatedFrame->hw_frames_ctx = av_buffer_ref(hw_frames_ctx); // Set the CUDA frames context
+    interpolatedFrame->format = AV_PIX_FMT_NV12;
+    interpolatedFrame->width = width;
+    interpolatedFrame->height = height;
+
+    int err = av_hwframe_get_buffer(hw_frames_ctx, interpolatedFrame, 0);
+    if (err < 0) {
+        std::cerr << "Failed to allocate hardware frame buffer" << std::endl;
+        return;
+    }
 
     writerThread = std::thread(&FFmpegWriter::writeThread, this);
-    writerThread.detach();  // Detach the writer thread
 }
+
+// Define error handling macros
+#define NPP_CHECK_NPP(func) { \
+    NppStatus status = (func); \
+    if (status != NPP_SUCCESS) { \
+        std::cerr << "NPP Error: " << status << std::endl; \
+        exit(-1); \
+    } \
+}
+
+inline void FFmpegWriter::avframe_rgb_to_nv12_npp(at::Tensor output) {
+    // Check if output tensor is on CUDA
+    if (!output.is_cuda()) {
+        throw std::runtime_error("Input tensor 'output' is not on CUDA.");
+    }
+
+    // Check if output tensor has the correct dtype
+    if (output.dtype() != torch::kUInt8) {
+        throw std::runtime_error("Input tensor 'output' does not have dtype torch::kUInt8.");
+    }
+
+    // Check if output tensor is contiguous
+    if (!output.is_contiguous()) {
+        output = output.contiguous();
+        std::cout << "Converted 'output' tensor to contiguous." << std::endl;
+    }
+
+    // Check dimensions
+    if (output.dim() != 3 || output.size(2) != 3) { // Assuming RGB channels last
+        throw std::runtime_error("Input tensor 'output' does not have the expected shape (C, H, W).");
+    }
+
+    // Set up destination pointers and strides
+    Npp8u* pDst[3] = { y_plane.data_ptr<Npp8u>(), u_plane.data_ptr<Npp8u>(), v_plane.data_ptr<Npp8u>() };
+    int rDstStep[3] = { static_cast<int>(y_plane.stride(0)), static_cast<int>(u_plane.stride(0)), static_cast<int>(v_plane.stride(0)) };
+
+    // Source RGB data and step
+    Npp8u* pSrc = output.data_ptr<Npp8u>();
+    int nSrcStep = output.stride(0);
+
+    // Define ROI
+    NppiSize oSizeROI = { width, height };
+
+    // Perform RGB to YUV420 conversion (planar)
+    NPP_CHECK_NPP(nppiRGBToYUV420_8u_C3P3R(
+        pSrc,
+        nSrcStep,
+        pDst,
+        rDstStep,
+        oSizeROI
+    ));
+
+    // Perform tensor operations
+    try {
+        uv_flat.index_put_({ torch::indexing::Slice(0, torch::indexing::None, 2) }, u_flat);
+        uv_flat.index_put_({ torch::indexing::Slice(1, torch::indexing::None, 2) }, v_flat);
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "c10::Error during index_put_: " << e.what() << std::endl;
+        throw; // Re-throw after logging
+    }
+
+    // Reshape UV data back to 2D
+    try {
+        uv_plane = uv_flat.view({ height / 2, width });
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "c10::Error during view(): " << e.what() << std::endl;
+        throw;
+    }
+
+    // Concatenate Y and UV planes
+    try {
+        nv12_tensor = torch::cat({ y_plane.view(-1), uv_plane.view(-1) }, 0);
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "c10::Error during cat(): " << e.what() << std::endl;
+        throw;
+    }
+
+    // Final check on nv12_tensor
+    if (nv12_tensor.numel() != static_cast<int64_t>(width) * height * 3 / 2) {
+        throw std::runtime_error("nv12_tensor has an unexpected size.");
+    }
+
+    //std::cout << "avframe_rgb_to_nv12_npp completed successfully." << std::endl;
+}
+
 
 // Thread method for writing frames from the queue
 inline void FFmpegWriter::writeThread() {
@@ -117,48 +282,62 @@ inline void FFmpegWriter::writeThread() {
     }
 }
 
-inline void FFmpegWriter::addFrame(AVFrame* inputFrame) {
-    if (!inputFrame || !inputFrame->data[0]) {
-        std::cerr << "Invalid input frame or uninitialized data pointers." << std::endl;
-        return;
-    }
 
+inline void FFmpegWriter::addFrame(at::Tensor inputTensor) {
+    //if size of tensor is not 3 chn, 
+    /*input.squeeze(0).permute({ 1, 2, 0 })
+                .mul_(255.0).clamp_(0, 255).to(torch::kU8).contiguous()
+                */
+    if (inputTensor.dim() != 3) {
+		inputTensor = inputTensor.squeeze(0).permute({ 1, 2, 0 })
+			.mul_(255.0).clamp_(0, 255).to(torch::kU8).contiguous();
+	}
+    else {
+		inputTensor = inputTensor.permute({ 1, 2, 0 })
+			.mul_(255.0).clamp_(0, 255).to(torch::kU8).contiguous();
+	}
+    avframe_rgb_to_nv12_npp(inputTensor);
+    // [Line 54] Copy NV12 data into interpolated frame
+
+    cudaMemcpy2D(
+        interpolatedFrame->data[0],
+        interpolatedFrame->linesize[0],
+        nv12_tensor.data_ptr<uint8_t>(),
+        width * sizeof(uint8_t),
+        width * sizeof(uint8_t),
+        height,
+        cudaMemcpyDeviceToDevice
+    );
+
+    cudaMemcpy2D(
+        interpolatedFrame->data[1],
+        interpolatedFrame->linesize[1],
+        nv12_tensor.data_ptr<uint8_t>() + (width * height),
+        width * sizeof(uint8_t),
+        width * sizeof(uint8_t),
+        height / 2,
+        cudaMemcpyDeviceToDevice
+    );
     AVFrame* frameToEncode = nullptr;
 
-    // Assign a PTS to the input frame if it's not already set
-    inputFrame->pts = pts++;
-
-    if (inputFrame->format == AV_PIX_FMT_CUDA) {
+    if (interpolatedFrame->format == AV_PIX_FMT_NV12) {
+        frameToEncode = av_frame_clone(interpolatedFrame);  // Directly use NV12 frame
+        frameToEncode->pts = interpolatedFrame->pts;  // Carry over the PTS
+    }
+    else if (interpolatedFrame->format == AV_PIX_FMT_CUDA) {
         // Convert CUDA frame to NV12
         AVFrame* nv12Frame = av_frame_alloc();
         nv12Frame->format = AV_PIX_FMT_NV12;
-        nv12Frame->width = inputFrame->width;
-        nv12Frame->height = inputFrame->height;
+        nv12Frame->width = interpolatedFrame->width;
+        nv12Frame->height = interpolatedFrame->height;
 
         // Transfer CUDA frame to NV12
-        av_hwframe_transfer_data(nv12Frame, inputFrame, 0);
-        nv12Frame->pts = inputFrame->pts;  // Carry over the PTS
+        av_hwframe_transfer_data(nv12Frame, interpolatedFrame, 0);
+        nv12Frame->pts = interpolatedFrame->pts;  // Carry over the PTS
         frameToEncode = nv12Frame;
     }
-    else if (inputFrame->format == AV_PIX_FMT_RGB24) {
-        // Convert RGB frame to NV12
-        frameToEncode = av_frame_alloc();
-        frameToEncode->format = AV_PIX_FMT_NV12;
-        frameToEncode->width = inputFrame->width;
-        frameToEncode->height = inputFrame->height;
-        av_frame_get_buffer(frameToEncode, 32);
-
-        // Convert RGB24 to NV12
-        sws_scale(swsCtx, inputFrame->data, inputFrame->linesize, 0, height,
-            frameToEncode->data, frameToEncode->linesize);
-        frameToEncode->pts = inputFrame->pts;  // Carry over the PTS
-    }
-    else if (inputFrame->format == AV_PIX_FMT_NV12) {
-        frameToEncode = av_frame_clone(inputFrame);  // Directly use NV12 frame
-        frameToEncode->pts = inputFrame->pts;  // Carry over the PTS
-    }
     else {
-        std::cerr << "Error: Unsupported pixel format: " << av_get_pix_fmt_name((AVPixelFormat)inputFrame->format) << std::endl;
+        std::cerr << "Error: Unsupported pixel format: " << av_get_pix_fmt_name((AVPixelFormat)interpolatedFrame->format) << std::endl;
         return;
     }
 

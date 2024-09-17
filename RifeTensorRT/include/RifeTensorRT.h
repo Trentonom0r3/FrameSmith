@@ -21,7 +21,7 @@ public:
     void processFrame(at::Tensor& frame) const;
     void avframe_nv12_to_rgb_npp(AVFrame* gpu_frame);
     void avframe_rgb_to_nv12_npp(at::Tensor rgb_tensor);
-    void RifeTensorRT::run(AVFrame* inputFrame);
+    void RifeTensorRT::run(at::Tensor input);
     // Allocate tensors for Y, U, and V planes on GPU
     int getInterpolateFactor() const { return interpolateFactor; }
     int getWidth() const { return width; }
@@ -34,7 +34,7 @@ public:
     AVBufferRef* hw_device_ctx;
     ~RifeTensorRT();
     bool benchmarkMode;
-protected:
+
     std::string interpolateMethod;
     int interpolateFactor;
     int width;
@@ -58,3 +58,5 @@ protected:
     std::vector<void*> bindings;
     torch::ScalarType dType;
 };
+
+

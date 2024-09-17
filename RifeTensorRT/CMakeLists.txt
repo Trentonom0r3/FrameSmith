@@ -15,6 +15,7 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS_RELEASE "/MD") # Use dynamic release runtime for Release builds
 endif()
 
+
 # Enable verbose output for troubleshooting
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
@@ -78,7 +79,7 @@ find_library(SWSCALE_LIBRARY swscale HINTS "C:/Users/tjerf/vcpkg/installed/x64-w
 find_library(SWRESAMPLE_LIBRARY swresample HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
 
 # Include directories
-include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ ${TENSORRT_DIR}/include ${VCPKG_DIR}/include ${OpenCV_INCLUDE_DIRS})
+include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ concurrentqueue/ ${TENSORRT_DIR}/include ${VCPKG_DIR}/include ${OpenCV_INCLUDE_DIRS})
 
 # Link libraries
 if(WIN32)
