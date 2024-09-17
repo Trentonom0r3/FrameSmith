@@ -112,6 +112,11 @@ inline std::string modelsMap(const std::string& model, const std::string& modelT
             (half ? (ensemble ? "rife417_v2_ensembleTrue_op20_fp16_clamp_onnxslim.onnx" : "rife417_v2_ensembleFalse_op20_fp16_clamp_onnxslim.onnx")
                 : (ensemble ? "rife417_v2_ensembleTrue_op20_clamp_onnxslim.onnx" : "rife417_v2_ensembleFalse_op20_clamp_onnxslim.onnx"));
     }
+    else if (model == "rife4.15" || model == "rife4.15-tensorrt" || model == "rife-v4.15-ncnn") {
+		return (modelType == "pth") ? "rife415.pth" :
+			(half ? (ensemble ? "rife415_ensembleTrue_op19_fp16_clamp_sim.onnx" : "rife415_ensembleFalse_op19_fp16_clamp_sim.onnx")
+                				: (ensemble ? "rife415_ensembleTrue_op19_clamp_sim.onnx" : "rife415_ensembleFalse_op19_clamp_sim.onnx"));
+	}
     else if (model == "rife4.15-lite" || model == "rife4.15-lite-tensorrt" || model == "rife-v4.15-lite-ncnn") {
         return (modelType == "pth") ? "rife415_lite.pth" :
             (half ? (ensemble ? "rife_v4.15_lite_ensemble_fp16_op20_sim.onnx" : "rife_v4.15_lite_fp16_op20_sim.onnx")
@@ -304,6 +309,8 @@ inline std::string downloadModels(const std::string& model, const std::string& m
     if (model == "rife4.22-tensorrt" || model == "rife4.21-tensorrt" ||
         model == "rife4.20-tensorrt" || model == "rife4.18-tensorrt" ||
         model == "rife4.17-tensorrt" || model == "rife4.6-tensorrt" ||
+        model == "rife4.15-lite-tensorrt" || model == "rife4.16-lite-tensorrt" ||
+        model == "rife4.15-tensorrt" || model == "rife-v4.18-ncnn" ||
         model == "span-tensorrt" || model == "span-directml" ||
         model == "shift_lpips-tensorrt" || model == "shift_lpips-directml") {
 
