@@ -68,6 +68,7 @@ public:
     void finalize();
     void FFmpegWriter::avframe_rgb_to_nv12_npp(at::Tensor output);
     void setStream(cudaStream_t stream) { writestream = stream; }
+    inline cudaStream_t getStream() const { return writestream; }
 private:
     AVFormatContext* formatCtx = nullptr;
     AVCodecContext* codecCtx = nullptr;
@@ -173,6 +174,8 @@ inline FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, 
         std::cerr << "Failed to allocate hardware frame buffer" << std::endl;
         return;
     }
+
+    cudaStreamCreate(&writestream);
 
     writerThread = std::thread(&FFmpegWriter::writeThread, this);
 }
@@ -300,25 +303,28 @@ inline void FFmpegWriter::addFrame(at::Tensor inputTensor) {
     avframe_rgb_to_nv12_npp(inputTensor);
     // [Line 54] Copy NV12 data into interpolated frame
 
-    cudaMemcpy2D(
+    cudaMemcpy2DAsync(
         interpolatedFrame->data[0],
         interpolatedFrame->linesize[0],
         nv12_tensor.data_ptr<uint8_t>(),
         width * sizeof(uint8_t),
         width * sizeof(uint8_t),
         height,
-        cudaMemcpyDeviceToDevice
+        cudaMemcpyDeviceToDevice,
+        writestream
     );
 
-    cudaMemcpy2D(
+    cudaMemcpy2DAsync(
         interpolatedFrame->data[1],
         interpolatedFrame->linesize[1],
         nv12_tensor.data_ptr<uint8_t>() + (width * height),
         width * sizeof(uint8_t),
         width * sizeof(uint8_t),
         height / 2,
-        cudaMemcpyDeviceToDevice
+        cudaMemcpyDeviceToDevice,
+        writestream
     );
+
     AVFrame* frameToEncode = nullptr;
 
     if (interpolatedFrame->format == AV_PIX_FMT_NV12) {

@@ -44,8 +44,8 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
 
     // Initialize CUDA streams
     cudaStreamCreate(&stream);
-    cudaStreamCreate(&writestream);
-    writer.setStream(writestream);
+   // cudaStreamCreate(&writestream);
+    //writer.setStream(writestream);
     for (int i = 0; i < interpolateFactor - 1; ++i) {
         auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
         timestep_tensors.push_back(timestep);
@@ -54,7 +54,7 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
 
 RifeTensorRT::~RifeTensorRT() {
     cudaStreamDestroy(stream);
-    cudaStreamDestroy(writestream);
+   // cudaStreamDestroy(writestream);
   //  av_frame_free(&interpolatedFrame);
    // av_buffer_unref(&hw_frames_ctx);
    // av_buffer_unref(&hw_device_ctx);
