@@ -120,7 +120,8 @@ inline FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, 
 
     // Use multiple threads for encoding (limited to 16)
     codecCtx->thread_count = (std::min)(static_cast<int>(std::thread::hardware_concurrency()), 16);
-    codecCtx->thread_type = FF_THREAD_FRAME;  // Frame-based threading
+    codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
 
     avcodec_open2(codecCtx, codec, nullptr);
 
