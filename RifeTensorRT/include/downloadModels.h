@@ -114,8 +114,8 @@ inline std::string modelsMap(const std::string& model, const std::string& modelT
     }
     else if (model == "rife4.15" || model == "rife4.15-tensorrt" || model == "rife-v4.15-ncnn") {
 		return (modelType == "pth") ? "rife415.pth" :
-			(half ? (ensemble ? "rife415_ensembleTrue_op19_fp16_clamp_sim.onnx" : "rife415_ensembleFalse_op19_fp16_clamp_sim.onnx")
-                				: (ensemble ? "rife415_ensembleTrue_op19_clamp_sim.onnx" : "rife415_ensembleFalse_op19_clamp_sim.onnx"));
+			(half ? (ensemble ? "rife415_v2_ensembleTrue_op20_fp16_clamp_onnxslim.onnx" : "rife415_v2_ensembleFalse_op20_fp16_clamp_onnxslim.onnx")
+				: (ensemble ? "rife415_v2_ensembleTrue_op20_clamp_onnxslim.onnx" : "rife415_v2_ensembleFalse_op20_clamp_onnxslim.onnx"));
 	}
     else if (model == "rife4.15-lite" || model == "rife4.15-lite-tensorrt" || model == "rife-v4.15-lite-ncnn") {
         return (modelType == "pth") ? "rife415_lite.pth" :
@@ -131,6 +131,11 @@ inline std::string modelsMap(const std::string& model, const std::string& modelT
         return (modelType == "pth") ? "rife416_lite.pth" :
             (ensemble ? "rife-v4.16-lite-ensemble-ncnn.zip" : "rife-v4.16-lite-ncnn.zip");
     }
+    else if (model == "rife4.22" || model == "rife4.22-tensorrt") {
+		return (modelType == "pth") ? "rife422.pth" :
+			(half ? (ensemble ? "rife422_v2_ensembleTrue_op20_fp16_clamp_onnxslim.onnx" : "rife422_v2_ensembleFalse_op20_fp16_clamp_onnxslim.onnx")
+				: (ensemble ? "rife422_v2_ensembleTrue_op20_clamp_onnxslim.onnx" : "rife422_v2_ensembleFalse_op20_clamp_onnxslim.onnx"));
+	}
     else if (model == "segment-tensorrt" || model == "segment-directml") {
         return "isnet_is.onnx";
     }

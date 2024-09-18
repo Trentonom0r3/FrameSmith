@@ -17,18 +17,15 @@ namespace fs = std::filesystem;
 class Logger : public ILogger {
 public:
     void log(Severity severity, const char* msg) noexcept override {
-        if (severity == Severity::kINFO) {
-            std::cerr << cyan("[TensorRT INFO] ") << msg << std::endl;
-        }
-        else if (severity == Severity::kWARNING) {
-            std::cerr << yellow("[TensorRT WARNING] ") << msg << std::endl;
-        }
-        else if (severity == Severity::kERROR) {
-            std::cerr << red("[TensorRT ERROR] ") << msg << std::endl;
+        if (severity == Severity::kERROR) {
+            std::cerr << red("TensorRT Error: ") << msg << std::endl;
         }
         else if (severity == Severity::kINTERNAL_ERROR) {
-            std::cerr << red("[TensorRT INTERNAL ERROR] ") << msg << std::endl;
-        }
+			std::cerr << red("TensorRT Internal Error: ") << msg << std::endl;
+		}
+        else if (severity == Severity::kWARNING) {
+            std::cerr << yellow("TensorRT Warning: ") << msg << std::endl;
+        };
     }
 };
 

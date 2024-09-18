@@ -34,7 +34,21 @@ public:
     // Accessor methods
     int getWidth() const { return width; }
     int getHeight() const { return height; }
-    double getFPS() const { return fps; }
+   // double getFPS() const { return fps; }
+    double getFPS() const {
+        // Implement this method to return the FPS of the video
+        // Example implementation:
+        if (formatCtx->streams[0]->avg_frame_rate.den != 0)
+            return static_cast<double>(formatCtx->streams[0]->avg_frame_rate.num) / formatCtx->streams[0]->avg_frame_rate.den;
+        else
+            return fps;
+    }
+    int getTotalFrames() const {
+        // Assuming FFmpegReader has a method to get duration in seconds
+        double duration = getDuration(); // Implement getDuration() if not available
+        double fps = getFPS();
+        return static_cast<int>(duration * fps);
+    }
 
 private:
     // FFmpeg components
@@ -61,6 +75,11 @@ private:
     void avframe_nv12_to_rgb_npp(AVFrame* gpu_frame);
     void normalizeFrame();
 
+    double getDuration() const {
+        // Implement this method to return the duration of the video in seconds
+        // Example implementation:
+        return static_cast<double>(formatCtx->duration) / AV_TIME_BASE;
+    }
     // Static callback for hardware format
     static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts);
 };
@@ -142,6 +161,7 @@ FFmpegReader::FFmpegReader(const std::string& inputFilePath, torch::Device devic
 
     // Set get_format callback
     codecCtx->get_format = get_hw_format;
+    codecCtx->pkt_timebase = formatCtx->streams[videoStreamIndex]->time_base;
 
     // Open codec
     ret = avcodec_open2(codecCtx, codec, nullptr);
@@ -188,11 +208,6 @@ FFmpegReader::~FFmpegReader() {
 }
 
 void FFmpegReader::avframe_nv12_to_rgb_npp(AVFrame* gpu_frame) {
-    if (gpu_frame->format != AV_PIX_FMT_CUDA) {
-        std::cerr << "Frame is not in CUDA format." << std::endl;
-        throw std::runtime_error("Unsupported frame format.");
-    }
-
     int nYUVPitch = gpu_frame->linesize[0];
     // Assuming planar NV12, where U and V are interleaved in data[1]
     // NPP expects separate U and V planes for NV12, but since NV12 has interleaved UV, we pass data[1] as U
@@ -246,9 +261,6 @@ bool FFmpegReader::readFrame(torch::Tensor& tensor) {
                 // Flush decoder
                 ret = avcodec_send_packet(codecCtx, nullptr);
                 if (ret < 0) {
-                    char errBuf[AV_ERROR_MAX_STRING_SIZE];
-                    av_strerror(ret, errBuf, sizeof(errBuf));
-                    std::cerr << "Error sending flush packet: " << errBuf << std::endl;
                     break;
                 }
             }
@@ -280,38 +292,14 @@ bool FFmpegReader::readFrame(torch::Tensor& tensor) {
         else if (ret == AVERROR_EOF) {
             break; // End of stream
         }
-        else if (ret < 0) {
-            char errBuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errBuf, sizeof(errBuf));
-            std::cerr << "Error receiving frame: " << errBuf << std::endl;
-            break;
-        }
 
         if (frameOut->format == AV_PIX_FMT_CUDA) {
-            // Convert and normalize frame
-            try {
                 avframe_nv12_to_rgb_npp(frameOut);
                 normalizeFrame();
-                // Ensure the passed tensor is on the correct device and has the correct shape
-                if (!tensor.device().is_cuda()) {
-                    std::cerr << "Output tensor is not on CUDA device." << std::endl;
-                    throw std::runtime_error("Tensor device mismatch.");
-                }
-                if (!tensor.is_contiguous()) {
-                    tensor = tensor.contiguous();
-                }
-                if (tensor.sizes() != intermediate_tensor.sizes()) {
-                    std::cerr << "Output tensor has incorrect shape." << std::endl;
-                    throw std::runtime_error("Tensor shape mismatch.");
-                }
+             
                 // Copy the intermediate tensor to the passed tensor
                 tensor.copy_(intermediate_tensor);
                 success = true;
-            }
-            catch (const std::exception& e) {
-                std::cerr << "Exception during frame processing: " << e.what() << std::endl;
-                success = false;
-            }
             break;
         }
         else {
