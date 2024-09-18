@@ -4,7 +4,6 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
-#include <c10/cuda/CUDAStream.h>
 #include <trtHandler.h>
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -42,10 +41,10 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
     // Initialize model and tensors
     handleModel();
 
-    // Initialize CUDA streams
-    cudaStreamCreate(&stream);
-   // cudaStreamCreate(&writestream);
-    //writer.setStream(writestream);
+    // Initialize CUDA inferenceStreams
+    cudaStreamCreate(&inferenceStream);
+   // cudaStreamCreate(&writeinferenceStream);
+    //writer.setinferenceStream(writeinferenceStream);
     for (int i = 0; i < interpolateFactor - 1; ++i) {
         auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
         timestep_tensors.push_back(timestep);
@@ -53,11 +52,7 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
 }
 
 RifeTensorRT::~RifeTensorRT() {
-    cudaStreamDestroy(stream);
-   // cudaStreamDestroy(writestream);
-  //  av_frame_free(&interpolatedFrame);
-   // av_buffer_unref(&hw_frames_ctx);
-   // av_buffer_unref(&hw_device_ctx);
+    cudaStreamDestroy(inferenceStream);
 }
 
 // Method to handle model loading and initialization
@@ -122,75 +117,51 @@ void RifeTensorRT::handleModel() {
     context->setTensorAddress("output", dummyOutput.data_ptr());
 }
 
-// Preprocess the frame: normalize pixel values
-void RifeTensorRT::processFrame(at::Tensor& frame) const {
-    frame = frame.to(half ? torch::kFloat16 : torch::kFloat32)
-        .div_(255.0)
-        .clamp_(0.0, 1.0)
-        .contiguous();
-}
-
-
 void RifeTensorRT::run(at::Tensor input) {
-    // [Line 1] Static variables for graph state
-    static bool graphInitialized = false;
-    static cudaGraph_t graph;
-    static cudaGraphExec_t graphExec;
+    // Use the CUDA inferenceStream for all operations to enable asynchronous execution
 
     if (firstRun) {
-        I0.copy_(input, true);
+        // Asynchronously copy the input to I0 using the provided CUDA inferenceStream
+        cudaMemcpyAsync(I0.data_ptr(), input.data_ptr(), input.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
         firstRun = false;
-        if (!benchmarkMode) {
-            writer.addFrame(input);
-        }
+
+        // Add frame asynchronously (ensure writer supports async or synchronize as needed)
+        writer.addFrame(input, benchmarkMode);
         return;
     }
 
-    // [Line 15] Alternate between I0 and I1
+    // Alternate between I0 and I1 for source and destination
     auto& source = useI0AsSource ? I0 : I1;
     auto& destination = useI0AsSource ? I1 : I0;
-    destination.copy_(input, true);
 
-    // [Line 20] Prepare input tensors
-    dummyInput.slice(1, 0, 3).copy_(source, true);
-    dummyInput.slice(1, 3, 6).copy_(destination, true);
+    // Asynchronously copy input data
+    cudaMemcpyAsync(destination.data_ptr(), input.data_ptr(), input.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 
+    // Prepare input tensors
+    cudaMemcpyAsync(dummyInput.slice(1, 0, 3).data_ptr(), source.data_ptr(), source.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
+    cudaMemcpyAsync(dummyInput.slice(1, 3, 6).data_ptr(), destination.data_ptr(), destination.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
+
+    // Perform interpolation for the required number of frames
     for (int i = 0; i < interpolateFactor - 1; ++i) {
-        // [Line 25] Update timestep in dummyInput
-        dummyInput.slice(1, 6, 7).copy_(timestep_tensors[i], true);
+        // Update timestep asynchronously
+        cudaMemcpyAsync(dummyInput.slice(1, 6, 7).data_ptr(), timestep_tensors[i].data_ptr(), timestep_tensors[i].nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 
-        // [Line 28] Enqueue inference
-        if (!graphInitialized) {
-            // [Line 30] Begin graph capture
-            cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+        // Enqueue inference using the inferenceStream
+        context->enqueueV3(inferenceStream);
 
-            // [Line 32] Enqueue inference
-            context->enqueueV3(stream);
-
-            // [Line 35] End graph capture
-            cudaStreamEndCapture(stream, &graph);
-
-            // [Line 37] Instantiate the graph
-            cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0);
-
-            graphInitialized = true;
-        }
-
-        // [Line 42] Launch the graph
-        cudaGraphLaunch(graphExec, stream);
+        // Assuming the inference output is stored in dummyOutput, pass the result to the writer
         rgb_tensor = dummyOutput;
-           // cudaStreamSynchronize(stream);
 
-            if (!benchmarkMode) {
-				writer.addFrame(rgb_tensor);
-			}
+        // Add the interpolated frame asynchronously
+        writer.addFrame(rgb_tensor, benchmarkMode);
     }
 
-    if (!benchmarkMode) {
-     writer.addFrame(input);
-    }
-   
-   // cudaStreamSynchronize(getWriteStream());  // Synchronize write stream
+    // Add the original frame after processing asynchronously
+    writer.addFrame(input, benchmarkMode);
 
+    // Optionally synchronize the inferenceStream if required at the end
+    // cudainferenceStreamSynchronize(inferenceStream); // Only needed if later steps depend on the inferenceStream finishing
+
+    // Flip the source flag for the next run
     useI0AsSource = !useI0AsSource;
 }

@@ -1,4 +1,4 @@
-#include "RifeTensorRT.h"
+﻿#include "RifeTensorRT.h"
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -6,31 +6,52 @@
 #include "Reader.h"
 #include "Writer.h"  // Your FFmpegWriter class
 #include <cuda_runtime.h>
+#include <iomanip>        // For std::fixed and std::setprecision
 
-
-// Helper to synchronize CUDA stream after batchSize frames
 void synchronizeStreams(RifeTensorRT& rifeTensorRT) {
-    cudaStreamSynchronize(rifeTensorRT.getStream());  // Synchronize inference stream
-   // cudaStreamSynchronize(rifeTensorRT.getWriteStream());  // Synchronize write stream
+    // Synchronize RifeTensorRT's inference and copy streams
+
+    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getInferenceStream()));
+    // Synchronize FFmpegWriter's streams
+    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getUStream()));
+    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getConvertStream()));
+    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getStream()));
 }
 
-void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, int batchSize, bool benchmarkMode, int& frameCount) {
+void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, bool benchmarkMode, int& frameCount) {
     bool halfPrecision = true;
     torch::Device device(torch::kCUDA);
     torch::Dtype dtype = halfPrecision ? torch::kFloat16 : torch::kFloat32;
-    torch::Tensor frameTensor = torch::zeros({ 1, 3, rifeTensorRT.height, rifeTensorRT.width }, torch::TensorOptions().dtype(dtype).device(device).requires_grad(false));
-    
+    torch::Tensor frameTensor = torch::zeros({ 1, 3, rifeTensorRT.height, rifeTensorRT.width },
+        torch::TensorOptions().dtype(dtype).device(device).requires_grad(false));
+
+    size_t freeMem = 0;
+    size_t totalMem = 0;
+    const float memoryThreshold = 0.75f; // 75% threshold for memory usage
+    std::cout << "Processing frames..." << std::endl;
     while (reader.readFrame(frameTensor)) {
         // Asynchronously run TensorRT inference on the frame
         rifeTensorRT.run(frameTensor);
 
         frameCount++;
-       // batchCounter++;
 
+        // Check memory usage every 10 frames to avoid excessive checking
+        if (frameCount % 100 == 0) {
+            cudaMemGetInfo(&freeMem, &totalMem);
 
+            // Calculate memory usage
+            float memoryUsed = 1.0f - (static_cast<float>(freeMem) / static_cast<float>(totalMem));
+
+            // If memory usage exceeds 75%, synchronize the streams
+            if (memoryUsed >= memoryThreshold) {
+                std::cout << "Memory usage exceeds 75%. Synchronizing streams..." << std::endl;
+                synchronizeStreams(rifeTensorRT);
+            }
+        }
     }
-    synchronizeStreams(rifeTensorRT);  // Synchronize the last batch
-    //av_frame_free(&preAllocatedInputFrame);  // Free the frame memory after done
+
+    // Final synchronization after processing all frames
+    synchronizeStreams(rifeTensorRT);
 }
 
 int main(int argc, char** argv) {
@@ -46,7 +67,6 @@ int main(int argc, char** argv) {
     std::string modelName = argv[3];
     int interpolationFactor = std::stoi(argv[4]);
 
-    int batchSize = 25;  // Default batch size
     bool benchmarkMode = false;
 
     // Parse optional arguments
@@ -70,25 +90,34 @@ int main(int argc, char** argv) {
     int width = reader.getWidth();
     int height = reader.getHeight();
     double fps = reader.getFPS();
+    std::cout << R"(
 
-    FFmpegWriter* writer = new FFmpegWriter(outputVideoPath, width, height, fps * interpolationFactor);
+     _______   __   ______                  _______   __                            _______   __                     
+    |       \ |  \ /      \                |       \ |  \                          |       \ |  \                    
+    | $$$$$$$\ \$$|  $$$$$$\ ______        | $$$$$$$\| $$ __    __   _______       | $$$$$$$\| $$ __    __   _______ 
+    | $$__| $$|  \| $$_  \$$/      \       | $$__/ $$| $$|  \  |  \ /       \      | $$__/ $$| $$|  \  |  \ /       \
+    | $$    $$| $$| $$ \   |  $$$$$$\      | $$    $$| $$| $$  | $$|  $$$$$$$      | $$    $$| $$| $$  | $$|  $$$$$$$
+    | $$$$$$$\| $$| $$$$   | $$    $$      | $$$$$$$ | $$| $$  | $$ \$$    \       | $$$$$$$ | $$| $$  | $$ \$$    \ 
+    | $$  | $$| $$| $$     | $$$$$$$$      | $$      | $$| $$__/ $$ _\$$$$$$\      | $$      | $$| $$__/ $$ _\$$$$$$\
+    | $$  | $$| $$| $$      \$$     \      | $$      | $$ \$$    $$|       $$      | $$      | $$ \$$    $$|       $$
+     \$$   \$$ \$$ \$$       \$$$$$$$       \$$       \$$  \$$$$$$  \$$$$$$$        \$$       \$$  \$$$$$$  \$$$$$$$                  
+                RIFE FOR C++ WITH TENSORRT. Created by: @Trentonom0r3 - https://github.com/Trentonom0r3
+                           Source: https://github.com/Trentonom0r3/RifeTensorRT                                                                                                                                                                                                             
+        )" << std::endl;
+
+    FFmpegWriter* writer = new FFmpegWriter(outputVideoPath, width, height, fps * interpolationFactor, benchmarkMode);
 
     // Initialize RifeTensorRT with the model name and interpolation factor
     RifeTensorRT rifeTensorRT(modelName,interpolationFactor, width, height, true, false, benchmarkMode, *writer);
-
+   // reader.setStream(rifeTensorRT.getStream());
     // Initialize FFmpeg-based video writer if not in benchmark mode
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
     // Directly call read and process function with CUDA stream-based concurrency
-    readAndProcessFrames(reader, rifeTensorRT, batchSize, benchmarkMode, frameCount);
-
-    // Finalize the writer if not in benchmark mode4
-    if (!benchmarkMode && writer != nullptr) {
-        writer->finalize();
-        delete writer;
-    }
-
+    readAndProcessFrames(reader, rifeTensorRT, benchmarkMode, frameCount);
+    
+    delete writer;
     // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = endTime - startTime;
