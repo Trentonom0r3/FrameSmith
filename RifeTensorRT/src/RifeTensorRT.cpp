@@ -88,7 +88,7 @@ void RifeTensorRT::handleModel() {
     I1 = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     dummyInput = torch::zeros({ 1, 7, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     dummyOutput = torch::zeros({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
-    rgb_tensor = torch::empty({ height, width, 3 }, torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA)).contiguous();
+    rgb_tensor = torch::empty({ 1, 3, height, width }, torch::TensorOptions().dtype(dType).device(device)).contiguous();
     // Bindings
     bindings = { dummyInput.data_ptr(), dummyOutput.data_ptr() };
 
@@ -124,9 +124,8 @@ void RifeTensorRT::run(at::Tensor input) {
         // Asynchronously copy the input to I0 using the provided CUDA inferenceStream
         cudaMemcpyAsync(I0.data_ptr(), input.data_ptr(), input.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
         firstRun = false;
-
         // Add frame asynchronously (ensure writer supports async or synchronize as needed)
-        writer.addFrame(input, benchmarkMode);
+        writer.addFrame(input.to(torch::kFloat32).contiguous().data_ptr<float>(), benchmarkMode);
         return;
     }
 
@@ -151,16 +150,12 @@ void RifeTensorRT::run(at::Tensor input) {
 
         // Assuming the inference output is stored in dummyOutput, pass the result to the writer
         rgb_tensor = dummyOutput;
-
         // Add the interpolated frame asynchronously
-        writer.addFrame(rgb_tensor, benchmarkMode);
+        writer.addFrame(rgb_tensor.to(torch::kFloat32).contiguous().data_ptr<float>(), benchmarkMode);
     }
 
     // Add the original frame after processing asynchronously
-    writer.addFrame(input, benchmarkMode);
-
-    // Optionally synchronize the inferenceStream if required at the end
-    // cudainferenceStreamSynchronize(inferenceStream); // Only needed if later steps depend on the inferenceStream finishing
+    writer.addFrame(input.to(torch::kFloat32).contiguous().data_ptr<float>(), benchmarkMode);
 
     // Flip the source flag for the next run
     useI0AsSource = !useI0AsSource;

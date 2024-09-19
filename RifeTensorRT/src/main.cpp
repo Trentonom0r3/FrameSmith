@@ -7,13 +7,14 @@
 #include "Writer.h"  // Your FFmpegWriter class
 #include <cuda_runtime.h>
 #include <iomanip>        // For std::fixed and std::setprecision
+#include <Timer.h>
+
 
 void synchronizeStreams(RifeTensorRT& rifeTensorRT) {
     // Synchronize RifeTensorRT's inference and copy streams
 
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getInferenceStream()));
     // Synchronize FFmpegWriter's streams
-    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getUStream()));
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getConvertStream()));
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getStream()));
 }
@@ -31,6 +32,7 @@ void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, bool
     std::cout << "Processing frames..." << std::endl;
     while (reader.readFrame(frameTensor)) {
         // Asynchronously run TensorRT inference on the frame
+       // Timer timer("Inference");
         rifeTensorRT.run(frameTensor);
 
         frameCount++;
