@@ -1,14 +1,14 @@
 cmake_minimum_required(VERSION 3.18)
-project(RifeTensorRT)
+project(RifeTensorRT LANGUAGES CXX CUDA)
 add_definitions(-DTORCH_USE_CUDA_DSA=1)
 
 set(CMAKE_CXX_STANDARD 17)
 add_definitions(-w)
 # Source files
-set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp)
+set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp src/Writer.cpp src/conversion.cu)
 
 # Create the executable
-add_executable(RifeTensorRT ${SOURCE_FILES} )
+add_executable(RifeTensorRT ${SOURCE_FILES})
 
 if (MSVC)
     set(CMAKE_CXX_FLAGS_DEBUG "/MDd")  # Use dynamic debug runtime for Debug builds
@@ -128,12 +128,13 @@ endif()
 
 # Set C++ standard
 set_property(TARGET RifeTensorRT PROPERTY CXX_STANDARD 17)
+set_property(TARGET RifeTensorRT PROPERTY CUDA_STANDARD 17)
 
 # Required by PyTorch
 if (MSVC)
   set(CMAKE_CXX_FLAGS "/EHsc ${CMAKE_CXX_FLAGS}")
 endif()
-
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
 # Add CUDA flags if necessary
 if(CUDA_FOUND)
     set_target_properties(RifeTensorRT PROPERTIES
@@ -141,3 +142,4 @@ if(CUDA_FOUND)
         CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89"
     )
 endif()
+

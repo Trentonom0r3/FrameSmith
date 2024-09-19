@@ -24,6 +24,8 @@ public:
     int getWidth() const { return width; }
     int getHeight() const { return height; }
 
+    FFmpegWriter& getWriter() { return writer; }
+
     // Separate getters for each stream
     cudaStream_t getInferenceStream() const { return inferenceStream; }
 
