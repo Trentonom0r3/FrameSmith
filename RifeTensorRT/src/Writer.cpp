@@ -2,8 +2,9 @@
 
 // Implementation
 
- FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int height, int fps, bool benchmark)
-    : width(width), height(height), fps(fps), isBenchmark(benchmark) {
+// Constructor
+FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int height, int fps, bool benchmark)
+    : width(width), height(height), fps(fps), isBenchmark(benchmark), head(TaggedPointer(nullptr, 0)) {
 
     // Allocate output context
     avformat_alloc_output_context2(&formatCtx, nullptr, "mp4", outputFilePath.c_str());
@@ -53,7 +54,7 @@
 
     // Set encoder options
     av_opt_set(codecCtx->priv_data, "crf", "23", 0);      // Adjust CRF value
-    av_opt_set(codecCtx->priv_data, "preset", "p7", 0);   // Use p1-p7 preset for NVENC
+    av_opt_set(codecCtx->priv_data, "preset", "p5", 0);   // Use p1-p7 preset for NVENC
 
     // Multi-threaded encoding
     codecCtx->thread_count = (std::min)(static_cast<int>(std::thread::hardware_concurrency()), 16);
@@ -97,30 +98,28 @@
     }
 
     // Create CUDA streams
-    CUDA_CHECK(cudaStreamCreate(&writestream));
     CUDA_CHECK(cudaStreamCreate(&convertstream));
 
-    // Initialize Frame Pool with custom deleter
-    {
-        std::lock_guard<std::mutex> lock(poolMutex);
-        for (int i = 0; i < 20; ++i) { // Pre-allocate 20 frames
-            AVFrame* poolFrame = av_frame_alloc();
-            if (!poolFrame) {
-                std::cerr << "Failed to allocate frame for pool." << std::endl;
-                continue;
-            }
-            poolFrame->format = codecCtx->pix_fmt;
-            poolFrame->width = codecCtx->width;
-            poolFrame->height = codecCtx->height;
-            poolFrame->hw_frames_ctx = av_buffer_ref(hw_frames_ctx); // Set the CUDA frames context
-            poolFrame->format = AV_PIX_FMT_CUDA;
-            if (av_hwframe_get_buffer(hw_frames_ctx, poolFrame, 0) < 0) {
-				std::cerr << "Failed to allocate hardware frame buffer for pool." << std::endl;
-				av_frame_free(&poolFrame);
-				continue;
-			}
-            framePool.emplace_back(poolFrame, AVFrameDeleter()); // Correctly initialize unique_ptr with custom deleter
+    // Initialize Frame Pool with lock-free stack
+    for (int i = 0; i < 20; ++i) { // Pre-allocate 20 frames
+        AVFrame* poolFrame = av_frame_alloc();
+        if (!poolFrame) {
+            std::cerr << "Failed to allocate frame for pool." << std::endl;
+            continue;
         }
+        poolFrame->format = codecCtx->pix_fmt;
+        poolFrame->width = codecCtx->width;
+        poolFrame->height = codecCtx->height;
+        poolFrame->hw_frames_ctx = av_buffer_ref(hw_frames_ctx); // Set the CUDA frames context
+        poolFrame->format = AV_PIX_FMT_CUDA;
+        if (av_hwframe_get_buffer(hw_frames_ctx, poolFrame, 0) < 0) {
+            std::cerr << "Failed to allocate hardware frame buffer for pool." << std::endl;
+            av_frame_free(&poolFrame);
+            continue;
+        }
+        // Wrap the frame in a FrameNode and push to the stack
+        FrameNode* node = new FrameNode(poolFrame);
+        pushFrame(node);
     }
 
     // Allocate NV12 buffer
@@ -138,14 +137,20 @@
     CUDA_CHECK(cudaMalloc(&uv_buffer, uv_size));
 }
 
- FFmpegWriter::~FFmpegWriter() {
-    finalize();  // Ensure finalization is done before destruction
+// Destructor
+FFmpegWriter::~FFmpegWriter() {
+   // finalize();  // Ensure finalization is done before destruction
+
+    // Clean up all frames in the pool
+    while (true) {
+        AVFrame* frame = popFrame();
+        if (!frame) break;
+        av_frame_free(&frame);
+    }
 
     // Clean up CUDA streams
     CUDA_CHECK(cudaStreamSynchronize(convertstream));
-    CUDA_CHECK(cudaStreamSynchronize(writestream));
     CUDA_CHECK(cudaStreamDestroy(convertstream));
-    CUDA_CHECK(cudaStreamDestroy(writestream));
 
     if (packet) {
         av_packet_free(&packet);
@@ -173,7 +178,6 @@
         uv_buffer = nullptr;
     }
 
-
     // Free format context
     if (formatCtx && !(formatCtx->oformat->flags & AVFMT_NOFILE)) {
         avio_closep(&formatCtx->pb);
@@ -185,15 +189,42 @@
     //  std::cout << "FFmpegWriter destroyed successfully." << std::endl;
 }
 
- AVFrame* FFmpegWriter::acquireFrame() {
-    std::lock_guard<std::mutex> lock(poolMutex);
-    if (!framePool.empty()) {
-        std::unique_ptr<AVFrame, AVFrameDeleter> framePtr = std::move(framePool.back());
-        framePool.pop_back();
-        return framePtr.release(); // Release ownership and return raw pointer
+// Push a frame onto the stack
+void FFmpegWriter::pushFrame(FrameNode* node) {
+    TaggedPointer oldHead = head.load(std::memory_order_relaxed);
+    while (true) {
+        node->next = oldHead.ptr;
+        TaggedPointer newHead(node, oldHead.tag + 1);
+        if (head.compare_exchange_weak(oldHead, newHead, std::memory_order_release, std::memory_order_relaxed)) {
+            break;
+        }
+        // If CAS failed, oldHead is updated with the current head
+    }
+}
+
+// Pop a frame from the stack
+AVFrame* FFmpegWriter::popFrame() {
+    TaggedPointer oldHead = head.load(std::memory_order_relaxed);
+    while (oldHead.ptr != nullptr) {
+        FrameNode* node = oldHead.ptr;
+        TaggedPointer newHead(node->next, oldHead.tag + 1);
+        if (head.compare_exchange_weak(oldHead, newHead, std::memory_order_acquire, std::memory_order_relaxed)) {
+            AVFrame* frame = node->frame;
+            delete node;
+            return frame;
+        }
+        // If CAS failed, oldHead is updated with the current head
+    }
+    return nullptr; // Stack is empty
+}
+
+AVFrame* FFmpegWriter::acquireFrame() {
+    AVFrame* frame = popFrame();
+    if (frame) {
+        return frame;
     }
     // If pool is empty, allocate a new frame
-    AVFrame* frame = av_frame_alloc();
+    frame = av_frame_alloc();
     if (!frame) {
         std::cerr << "Failed to allocate frame." << std::endl;
         return nullptr;
@@ -202,37 +233,54 @@
     frame->width = codecCtx->width;
     frame->height = codecCtx->height;
     if (av_hwframe_get_buffer(hw_frames_ctx, frame, 0) < 0) {
-		std::cerr << "Failed to allocate hardware frame buffer." << std::endl;
-		av_frame_free(&frame);
-		return nullptr;
-	}
-
+        std::cerr << "Failed to allocate hardware frame buffer." << std::endl;
+        av_frame_free(&frame);
+        return nullptr;
+    }
     return frame;
 }
 
- void FFmpegWriter::releaseFrame(AVFrame* frame) {
-    std::lock_guard<std::mutex> lock(poolMutex);
-    framePool.emplace_back(frame, AVFrameDeleter()); // Re-wrap the raw pointer into a unique_ptr
+void FFmpegWriter::releaseFrame(AVFrame* frame) {
+    // Wrap the frame in a FrameNode and push to the stack
+    FrameNode* node = new FrameNode(frame);
+    pushFrame(node);
 }
 
 
- void FFmpegWriter::addFrame(const float* rgb_ptr, bool benchmark) {
-     // Acquire a frame for encoding.
-     AVFrame* frameToEncode = acquireFrame();
-     if (!frameToEncode) {
-         std::cerr << "Failed to acquire frame for encoding." << std::endl;
-         return;
-     }
+template <typename T>
+void FFmpegWriter::addFrameTemplate(const T* rgb_ptr, bool benchmark) {
+    // Acquire a frame for encoding.
+    AVFrame* frameToEncode = acquireFrame();
+    if (!frameToEncode) {
+        std::cerr << "Failed to acquire frame for encoding." << std::endl;
+        return;
+    }
 
-     // Launch the combined CUDA kernel to normalize, convert RGB to YUV420, and interleave UV into NV12.
-     launch_rgb_to_nv12(rgb_ptr,
-         frameToEncode->data[0],  // Destination Y plane.
-         frameToEncode->data[1],  // Destination UV plane.
-         width,
-         height,
-         frameToEncode->linesize[0],  // Y plane stride.
-         frameToEncode->linesize[1],  // UV plane stride.
-         convertstream);
+    if constexpr (std::is_same<T, float>::value) {
+        // FP32 path
+        launch_rgb_to_nv12_fp32(rgb_ptr,
+            frameToEncode->data[0],  // Destination Y plane.
+            frameToEncode->data[1],  // Destination UV plane.
+            width,
+            height,
+            frameToEncode->linesize[0],  // Y plane stride.
+            frameToEncode->linesize[1],  // UV plane stride.
+            convertstream);
+    }
+    else if constexpr (std::is_same<T, __half>::value) {
+        // FP16 path
+        launch_rgb_to_nv12_fp16(rgb_ptr,
+            frameToEncode->data[0],  // Destination Y plane.
+            frameToEncode->data[1],  // Destination UV plane.
+            width,
+            height,
+            frameToEncode->linesize[0],  // Y plane stride.
+            frameToEncode->linesize[1],  // UV plane stride.
+            convertstream);
+    }
+    else {
+        static_assert(always_false<T>::value, "Unsupported data type for addFrameTemplate");
+    }
 
     if (benchmark) {
         releaseFrame(frameToEncode);
@@ -241,13 +289,16 @@
 
     frameToEncode->pts = pts++;
 
-
     // Enqueue the frame for encoding
     writeFrame(frameToEncode);
     releaseFrame(frameToEncode);
 }
 
- void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
+// Explicit template instantiation
+template void FFmpegWriter::addFrameTemplate<float>(const float*, bool);
+template void FFmpegWriter::addFrameTemplate<__half>(const __half*, bool);
+
+void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
 
     if (!inputFrame || !inputFrame->data[0]) {
         std::cerr << "Error: Invalid input frame or uninitialized data pointers." << std::endl;
@@ -309,7 +360,7 @@
     }
 }
 
- void FFmpegWriter::finalize() {
+void FFmpegWriter::finalize() {
     if (!isBenchmark) {
         // Flush encoder
         avcodec_send_frame(codecCtx, nullptr);
