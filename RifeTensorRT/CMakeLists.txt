@@ -25,7 +25,7 @@ if(WIN32)
 
     set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch" CACHE PATH "Path to Torch directory")
     set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" CACHE PATH "Path to CUDA Toolkit directory")
-    set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
+    set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.4/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
     set(VCPKG_DIR "C:/Users/tjerf/vcpkg/installed/x64-windows" CACHE PATH "Path to VCPKG_DIR installation directory")
 
     # Add vcpkg and other paths
@@ -123,6 +123,18 @@ elseif(UNIX)
         ${TENSORRT_DIR}/lib/libnvinfer_plugin${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvonnxparser${LIB_SUFFIX}
         #${OpenCV_LIBS}  # Link OpenCV libraries for UNIX
+
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppisu.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppitc.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnpps.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppc.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppial.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppicc.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppidei.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppif.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppig.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppim.so"
+        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppist.so"
     )
 endif()
 
@@ -142,4 +154,7 @@ if(CUDA_FOUND)
         CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89"
     )
 endif()
+
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
 
