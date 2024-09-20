@@ -5,10 +5,10 @@ add_definitions(-DTORCH_USE_CUDA_DSA=1)
 set(CMAKE_CXX_STANDARD 17)
 add_definitions(-w)
 # Source files
-set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp src/Writer.cpp src/conversion.cu)
+set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp src/Writer.cpp src/nv12_to_rgb.cu src/rgb_to_nv12.cu src/Reader.cpp)
 
 # Create the executable
-add_executable(RifeTensorRT ${SOURCE_FILES})
+add_executable(RifeTensorRT ${SOURCE_FILES} )
 
 if (MSVC)
     set(CMAKE_CXX_FLAGS_DEBUG "/MDd")  # Use dynamic debug runtime for Debug builds

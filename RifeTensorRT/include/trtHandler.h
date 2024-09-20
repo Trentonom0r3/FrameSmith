@@ -16,7 +16,7 @@ namespace fs = std::filesystem;
 
 class Logger : public ILogger {
 public:
-    void log(Severity severity, const char* msg) noexcept override {
+    inline void log(Severity severity, const char* msg) noexcept override {
         if (severity == Severity::kERROR) {
             std::cerr << red("TensorRT Error: ") << msg << std::endl;
         }
@@ -31,7 +31,7 @@ public:
 
 static Logger gLogger;
 
-std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
+inline std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
     const std::string& modelPath,
     const std::string& enginePath,
     bool fp16,
@@ -126,7 +126,7 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineCreator(
     return { engine, context };
 }
 
-std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineLoader(const std::string& enginePath) {
+inline std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineLoader(const std::string& enginePath) {
     std::ifstream engineFile(enginePath, std::ios::binary);
     if (!engineFile) {
         std::cerr << red("Failed to open engine file: ") << enginePath << std::endl;
@@ -162,7 +162,7 @@ std::pair<ICudaEngine*, IExecutionContext*> TensorRTEngineLoader(const std::stri
     return { engine, context };
 }
 
-std::string TensorRTEngineNameHandler(const std::string& modelPath, bool fp16, const std::vector<int>& optInputShape) {
+inline std::string TensorRTEngineNameHandler(const std::string& modelPath, bool fp16, const std::vector<int>& optInputShape) {
     std::string enginePrecision = fp16 ? "fp16" : "fp32";
     int height = optInputShape[2];
     int width = optInputShape[3];

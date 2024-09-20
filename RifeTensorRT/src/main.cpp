@@ -14,9 +14,9 @@ void synchronizeStreams(RifeTensorRT& rifeTensorRT) {
     // Synchronize RifeTensorRT's inference and copy streams
 
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getInferenceStream()));
-    // Synchronize FFmpegWriter's streams
+    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getWriteInferenceStream()));
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getConvertStream()));
-    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getStream()));
+    //CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getStream()));
 }
 
 void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, bool benchmarkMode, int& frameCount) {
@@ -47,13 +47,11 @@ void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, bool
             // If memory usage exceeds 75%, synchronize the streams
             if (memoryUsed >= memoryThreshold) {
                 std::cout << "Memory usage exceeds 75%. Synchronizing streams..." << std::endl;
+                cudaStreamSynchronize(reader.getStream());
                 synchronizeStreams(rifeTensorRT);
             }
         }
     }
-
-    // Final synchronization after processing all frames
-    synchronizeStreams(rifeTensorRT);
 }
 
 int main(int argc, char** argv) {
@@ -88,7 +86,7 @@ int main(int argc, char** argv) {
     torch::Device device(torch::kCUDA);
     bool halfPrecision = true;
     // Initialize FFmpeg-based video reader
-    FFmpegReader reader(inputVideoPath, device, halfPrecision);
+    FFmpegReader reader(inputVideoPath,device, halfPrecision);
     int width = reader.getWidth();
     int height = reader.getHeight();
     double fps = reader.getFPS();
@@ -110,15 +108,18 @@ int main(int argc, char** argv) {
     FFmpegWriter* writer = new FFmpegWriter(outputVideoPath, width, height, fps * interpolationFactor, benchmarkMode);
 
     // Initialize RifeTensorRT with the model name and interpolation factor
-    RifeTensorRT rifeTensorRT(modelName,interpolationFactor, width, height, true, false, benchmarkMode, *writer);
-   // reader.setStream(rifeTensorRT.getStream());
-    // Initialize FFmpeg-based video writer if not in benchmark mode
+    RifeTensorRT rifeTensorRT(modelName, interpolationFactor, width, height, true, false, benchmarkMode, *writer);
+    // reader.setStream(rifeTensorRT.getStream());
+     // Initialize FFmpeg-based video writer if not in benchmark mode
     int frameCount = 0;
     auto startTime = std::chrono::high_resolution_clock::now();
 
     // Directly call read and process function with CUDA stream-based concurrency
     readAndProcessFrames(reader, rifeTensorRT, benchmarkMode, frameCount);
-    
+    // Final synchronization after processing all frames
+    cudaStreamSynchronize(reader.getStream());
+    synchronizeStreams(rifeTensorRT);
+    writer->finalize();
     delete writer;
     // Calculate total processing time and FPS
     auto endTime = std::chrono::high_resolution_clock::now();

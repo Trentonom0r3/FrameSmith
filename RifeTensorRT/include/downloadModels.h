@@ -207,7 +207,7 @@ inline std::string getWeightsDir() {
     return weightsDir;
 }
 
-void printProgress(double percentage, double speed) {
+inline void printProgress(double percentage, double speed) {
     int barWidth = 50;  // Width of the progress bar
     std::cout << "[";
     int pos = static_cast<int>(barWidth * percentage);
@@ -220,13 +220,13 @@ void printProgress(double percentage, double speed) {
     std::cout.flush();
 }
 
-size_t write_data(void* ptr, size_t size, size_t nmemb, FILE* stream) {
+inline size_t write_data(void* ptr, size_t size, size_t nmemb, FILE* stream) {
     size_t written = fwrite(ptr, size, nmemb, stream);
     fflush(stream);  // Ensure all data is flushed to disk
     return written;
 }
 
-int progress_callback(void* ptr, curl_off_t total_to_download, curl_off_t now_downloaded, curl_off_t, curl_off_t) {
+inline int progress_callback(void* ptr, curl_off_t total_to_download, curl_off_t now_downloaded, curl_off_t, curl_off_t) {
     if (total_to_download > 0) {
         double progress = static_cast<double>(now_downloaded) / total_to_download;
         double speed = *(static_cast<double*>(ptr));  // Speed in KB/s
@@ -235,7 +235,7 @@ int progress_callback(void* ptr, curl_off_t total_to_download, curl_off_t now_do
     return 0;
 }
 
-std::string downloadAndLog(const std::string& model, const std::string& filename, const std::string& downloadUrl, const std::string& folderPath, int retries = 3) {
+inline std::string downloadAndLog(const std::string& model, const std::string& filename, const std::string& downloadUrl, const std::string& folderPath, int retries = 3) {
     std::string filePath = folderPath + "\\" + filename;
 
     for (int attempt = 0; attempt < retries; ++attempt) {
