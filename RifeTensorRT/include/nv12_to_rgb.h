@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 // Forward declare the CUDA functions
 extern "C" {
@@ -32,7 +33,7 @@ extern "C" {
 }
 
 // Dispatch function
-inline void nv12_to_rgb_normalized_dispatch(
+inline void launch_nv12_to_rgb_normalized_dispatch(
     const unsigned char* yPlane,
     const unsigned char* uvPlane,
     int width,

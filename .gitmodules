@@ -1,3 +1,0 @@
-[submodule "RifeTensorRT/concurrentqueue"]
-	path = RifeTensorRT/concurrentqueue
-	url = https://github.com/cameron314/concurrentqueue.git

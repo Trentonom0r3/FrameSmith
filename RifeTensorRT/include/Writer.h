@@ -8,8 +8,7 @@
 #include <thread>
 #include <iostream>
 #include <cuda_fp16.h> // Include CUDA half-precision support
-#include <torch/torch.h>
-#include <torch/cuda.h>
+
 // Forward declarations of custom CUDA functions
 extern "C" {
 #include <libavformat/avformat.h>
