@@ -91,7 +91,6 @@ if(WIN32)
         ${AVUTIL_LIBRARY}
         ${SWSCALE_LIBRARY}
         ${SWRESAMPLE_LIBRARY}
-        # ${OpenCV_LIBS}  # Link OpenCV libraries
         CURL::libcurl
         protobuf::libprotobuf
         "${TENSORRT_DIR}/lib/nvinfer_10${LIB_SUFFIX}"
@@ -99,19 +98,6 @@ if(WIN32)
         "${TENSORRT_DIR}/lib/nvonnxparser_10${LIB_SUFFIX}"
         "${TENSORRT_DIR}/lib/nvinfer_dispatch_10${LIB_SUFFIX}"
         "${TENSORRT_DIR}/lib/nvinfer_lean_10${LIB_SUFFIX}"
-
-        # NPP libraries
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppisu.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppitc.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/npps.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppc.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppial.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppicc.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppidei.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppif.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppig.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppim.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1/lib/x64/nppist.lib"
     )
 elseif(UNIX)
     target_link_libraries(RifeTensorRT 
@@ -122,19 +108,6 @@ elseif(UNIX)
         ${TENSORRT_DIR}/lib/libnvinfer${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvinfer_plugin${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvonnxparser${LIB_SUFFIX}
-        #${OpenCV_LIBS}  # Link OpenCV libraries for UNIX
-
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppisu.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppitc.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnpps.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppc.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppial.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppicc.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppidei.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppif.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppig.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppim.so"
-        "/usr/local/cuda-12.4/targets/x86_64-linux/lib/libnppist.so"
     )
 endif()
 
@@ -146,8 +119,10 @@ set_property(TARGET RifeTensorRT PROPERTY CUDA_STANDARD 17)
 if (MSVC)
   set(CMAKE_CXX_FLAGS "/EHsc ${CMAKE_CXX_FLAGS}")
 endif()
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
 # Add CUDA flags if necessary
+
 if(CUDA_FOUND)
     set_target_properties(RifeTensorRT PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
@@ -155,6 +130,4 @@ if(CUDA_FOUND)
     )
 endif()
 
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
 
