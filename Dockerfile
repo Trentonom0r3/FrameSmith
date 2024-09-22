@@ -3,7 +3,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES all
 
-RUN apt update -y && apt-get install libcurl4-openssl-dev wget unzip git nasm python3 python3-pip pkg-config cmake -y
+RUN apt update -y && apt-get install libcurl4-openssl-dev wget unzip git nasm python3 python3-pip pkg-config cmake libatomic1 -y
 RUN apt purge ffmpeg -y
 WORKDIR /tensorrt 
 
