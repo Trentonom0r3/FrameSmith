@@ -132,5 +132,7 @@ int main(int argc, char** argv) {
         << duration.count() << " seconds." << std::endl;
     std::cout << "Processing FPS: " << processingFPS << " frames per second." << std::endl;
 
+    quick_exit (EXIT_SUCCESS);
+
     return 0;
 }
