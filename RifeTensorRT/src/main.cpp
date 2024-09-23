@@ -8,12 +8,11 @@
 #include <cuda_runtime.h>
 #include <iomanip>        // For std::fixed and std::setprecision
 
-
 void synchronizeStreams(RifeTensorRT& rifeTensorRT, FFmpegReader& reader){
     CUDA_CHECK(cudaStreamSynchronize(reader.getStream()));
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getInferenceStream()));
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getWriteInferenceStream()));
-    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getConvertStream()));
+    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getStream()));
 }
 
 void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, bool benchmarkMode, int& frameCount) {
@@ -22,32 +21,17 @@ void readAndProcessFrames(FFmpegReader& reader, RifeTensorRT& rifeTensorRT, bool
     torch::Dtype dtype = halfPrecision ? torch::kFloat16 : torch::kFloat32;
     torch::Tensor frameTensor = torch::zeros({ 1, 3, rifeTensorRT.height, rifeTensorRT.width },
         torch::TensorOptions().dtype(dtype).device(device).requires_grad(false));
-
-    size_t freeMem = 0;
-    size_t totalMem = 0;
-    const float memoryThreshold = 0.75f; // 75% threshold for memory usage
+ 
     std::cout << "Processing frames..." << std::endl;
     while (reader.readFrame(frameTensor)) {
-      
+    
         rifeTensorRT.run(frameTensor);
-
         frameCount++;
 
-        // Check memory usage every 10 frames to avoid excessive checking
-        if (frameCount % 100 == 0) {
-            cudaMemGetInfo(&freeMem, &totalMem);
-
-            // Calculate memory usage
-            float memoryUsed = 1.0f - (static_cast<float>(freeMem) / static_cast<float>(totalMem));
-
-            // If memory usage exceeds 75%, synchronize the streams
-            if (memoryUsed >= memoryThreshold) {
-                std::cout << "Memory usage exceeds 75%. Synchronizing streams..." << std::endl;
-                synchronizeStreams(rifeTensorRT, reader);
-            }
-        }
+      
     }
 }
+
 
 int main(int argc, char** argv) {
     if (argc < 5) {

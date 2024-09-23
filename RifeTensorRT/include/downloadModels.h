@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <curl/curl.h>
 #include <stdexcept> // For exceptions
+#include <thread>
 
 namespace fs = std::filesystem;
 

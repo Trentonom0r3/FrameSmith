@@ -88,9 +88,6 @@ void RifeTensorRT::handleModel() {
 
 	firstRun = true;
 	useI0AsSource = true;
-	// Set the input and output tensor addresses in the TensorRT context
-	context->setTensorAddress("input", dummyInput.data_ptr());
-	context->setTensorAddress("output", dummyOutput.data_ptr());
 }
 
 void addToWriter(FFmpegWriter& writer, torch::Tensor& rgb_tensor, bool half, bool benchmarkMode) {
@@ -113,8 +110,8 @@ void RifeTensorRT::run(at::Tensor input) {
 	if (firstRun) {
 		// Asynchronously copy the input to I0 using the provided CUDA inferenceStream
 		cudaMemcpyAsync(I0.data_ptr(), input.data_ptr(), input.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
-		firstRun = false;	
-		addToWriter(writer, I0, half, benchmarkMode);
+		firstRun = false;
+		//addToWriter(writer, I0, half, benchmarkMode);
 	}
 
 	// Alternate between I0 and I1 for source and destination
@@ -123,26 +120,32 @@ void RifeTensorRT::run(at::Tensor input) {
 
 	// Asynchronously copy input data
 	cudaMemcpyAsync(destination.data_ptr(), input.data_ptr(), input.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
-
-	// Prepare input tensors
 	cudaMemcpyAsync(dummyInput.slice(1, 0, 3).data_ptr(), source.data_ptr(), source.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 	cudaMemcpyAsync(dummyInput.slice(1, 3, 6).data_ptr(), destination.data_ptr(), destination.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 
+	// Prepare input tensor
 	// Perform interpolation for the required number of frames
 	for (int i = 0; i < interpolateFactor - 1; ++i) {
-		// Update timestep asynchronously
-		cudaMemcpyAsync(dummyInput.slice(1, 6, 7).data_ptr(), timestep_tensors[i].data_ptr(), timestep_tensors[i].nbytes(), cudaMemcpyDeviceToDevice, writeinferenceStream);
+		cudaMemcpyAsync(dummyInput.slice(1, 6, 7).data_ptr(), timestep_tensors[i].data_ptr(), timestep_tensors[i].nbytes(),
+			cudaMemcpyDeviceToDevice, inferenceStream);
 
-		// Enqueue inference using the inferenceStream
-		context->enqueueV3(writeinferenceStream);
+		// Set the input and output tensor addresses in the TensorRT context
+		context->setTensorAddress("input", dummyInput.data_ptr());
+		context->setTensorAddress("output", dummyOutput.data_ptr());
 
-		// Assuming the inference output is stored in dummyOutput, pass the result to the writer
+		// Enqueue inference using the correct stream
+		context->enqueueV3(inferenceStream);
+
+		// Synchronize to ensure inference is complete
+		cudaStreamSynchronize(inferenceStream);
+
+		// Update the source for the next interpolation step
 		rgb_tensor = dummyOutput;
+
 		// Add the interpolated frame asynchronously
-
 		addToWriter(writer, rgb_tensor, half, benchmarkMode);
-
 	}
+
 
 	addToWriter(writer, destination, half, benchmarkMode);
 

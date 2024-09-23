@@ -98,7 +98,7 @@ FFmpegWriter::FFmpegWriter(const std::string& outputFilePath, int width, int hei
     }
 
     // Create CUDA streams
-    CUDA_CHECK(cudaStreamCreate(&convertstream));
+    CUDA_CHECK(cudaStreamCreate(&writestream));
 
     // Initialize Frame Pool with lock-free stack
     for (int i = 0; i < 20; ++i) { // Pre-allocate 20 frames
@@ -148,10 +148,6 @@ FFmpegWriter::~FFmpegWriter() {
         av_frame_free(&frame);
     }
 
-    // Clean up CUDA streams
-    CUDA_CHECK(cudaStreamSynchronize(convertstream));
-    CUDA_CHECK(cudaStreamDestroy(convertstream));
-
     if (packet) {
         av_packet_free(&packet);
     }
@@ -185,7 +181,8 @@ FFmpegWriter::~FFmpegWriter() {
     if (formatCtx) {
         avformat_free_context(formatCtx);
     }
-
+    // Clean up CUDA streams
+    CUDA_CHECK(cudaStreamDestroy(writestream));
     //  std::cout << "FFmpegWriter destroyed successfully." << std::endl;
 }
 
@@ -249,7 +246,6 @@ void FFmpegWriter::releaseFrame(AVFrame* frame) {
 
 template <typename T>
 void FFmpegWriter::addFrameTemplate(const T* rgb_ptr, bool benchmark) {
-    // Acquire a frame for encoding.
     AVFrame* frameToEncode = acquireFrame();
     if (!frameToEncode) {
         std::cerr << "Failed to acquire frame for encoding." << std::endl;
@@ -265,7 +261,7 @@ void FFmpegWriter::addFrameTemplate(const T* rgb_ptr, bool benchmark) {
             height,
             frameToEncode->linesize[0],  // Y plane stride.
             frameToEncode->linesize[1],  // UV plane stride.
-            convertstream);
+            writestream);
     }
     else if constexpr (std::is_same<T, __half>::value) {
         // FP16 path
@@ -276,7 +272,7 @@ void FFmpegWriter::addFrameTemplate(const T* rgb_ptr, bool benchmark) {
             height,
             frameToEncode->linesize[0],  // Y plane stride.
             frameToEncode->linesize[1],  // UV plane stride.
-            convertstream);
+            writestream);
     }
     else {
         static_assert(always_false<T>::value, "Unsupported data type for addFrameTemplate");
@@ -299,7 +295,6 @@ template void FFmpegWriter::addFrameTemplate<float>(const float*, bool);
 template void FFmpegWriter::addFrameTemplate<__half>(const __half*, bool);
 
 void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
-
     if (!inputFrame || !inputFrame->data[0]) {
         std::cerr << "Error: Invalid input frame or uninitialized data pointers." << std::endl;
         return;
@@ -361,7 +356,6 @@ void FFmpegWriter::writeFrame(AVFrame* inputFrame) {
 }
 
 void FFmpegWriter::finalize() {
-    if (!isBenchmark) {
         // Flush encoder
         avcodec_send_frame(codecCtx, nullptr);
         while (avcodec_receive_packet(codecCtx, packet) >= 0) {
@@ -380,7 +374,5 @@ void FFmpegWriter::finalize() {
         if (formatCtx && !(formatCtx->oformat->flags & AVFMT_NOFILE)) {
             avio_closep(&formatCtx->pb);
         }
-    }
-
     // std::cout << "Finalization complete." << std::endl;
 }

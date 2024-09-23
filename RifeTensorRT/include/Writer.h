@@ -112,9 +112,9 @@ public:
 	FFmpegWriter(const std::string& outputFilePath, int width, int height, int fps, bool benchmark);
 	~FFmpegWriter();
 	void finalize();  // Handle any finalization if necessary
-	void setStream(cudaStream_t stream) { writestream = stream; }
+
 	inline cudaStream_t getStream() const { return writestream; }
-	inline cudaStream_t getConvertStream() const { return convertstream; }
+
 	void writeFrame(AVFrame* inputFrame);
 	// Template addFrame method
 	template <typename T>
@@ -138,7 +138,7 @@ private:
 	int width, height, fps;
 	std::atomic<int64_t> pts{ 0 };
 
-	cudaStream_t writestream, convertstream;
+	cudaStream_t writestream;
 
 	AVBufferRef* hw_frames_ctx = nullptr;
 	AVBufferRef* hw_device_ctx = nullptr;
