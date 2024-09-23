@@ -19,7 +19,7 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
 
 	// Initialize CUDA inferenceStreams
 	cudaStreamCreate(&inferenceStream);
-	cudaStreamCreate(&writeinferenceStream);
+//	cudaStreamCreate(&writeinferenceStream);
 	//writer.setinferenceStream(writeinferenceStream);
 	for (int i = 0; i < interpolateFactor - 1; ++i) {
 		auto timestep = torch::full({ 1, 1, height, width }, (i + 1) * 1.0 / interpolateFactor, torch::TensorOptions().dtype(dType).device(device)).contiguous();
@@ -29,7 +29,7 @@ RifeTensorRT::RifeTensorRT(std::string interpolateMethod, int interpolateFactor,
 
 RifeTensorRT::~RifeTensorRT() {
 	cudaStreamDestroy(inferenceStream);
-	cudaStreamDestroy(writeinferenceStream);
+	//cudaStreamDestroy(writeinferenceStream);
 }
 
 // Method to handle model loading and initialization
@@ -117,15 +117,15 @@ void RifeTensorRT::run(at::Tensor input) {
 	// Alternate between I0 and I1 for source and destination
 	auto& source = useI0AsSource ? I0 : I1;
 	auto& destination = useI0AsSource ? I1 : I0;
-
-	// Asynchronously copy input data
 	cudaMemcpyAsync(destination.data_ptr(), input.data_ptr(), input.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 	cudaMemcpyAsync(dummyInput.slice(1, 0, 3).data_ptr(), source.data_ptr(), source.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 	cudaMemcpyAsync(dummyInput.slice(1, 3, 6).data_ptr(), destination.data_ptr(), destination.nbytes(), cudaMemcpyDeviceToDevice, inferenceStream);
 
+	// Asynchronously copy input data
 	// Prepare input tensor
 	// Perform interpolation for the required number of frames
 	for (int i = 0; i < interpolateFactor - 1; ++i) {
+
 		cudaMemcpyAsync(dummyInput.slice(1, 6, 7).data_ptr(), timestep_tensors[i].data_ptr(), timestep_tensors[i].nbytes(),
 			cudaMemcpyDeviceToDevice, inferenceStream);
 
