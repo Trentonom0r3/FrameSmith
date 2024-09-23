@@ -7,7 +7,6 @@ add_definitions(-w)
 # Source files
 set(SOURCE_FILES src/main.cpp src/RifeTensorRT.cpp src/Writer.cpp src/nv12_to_rgb.cu src/rgb_to_nv12.cu src/Reader.cpp)
 
-# Create the executable
 add_executable(RifeTensorRT ${SOURCE_FILES} )
 
 if (MSVC)
@@ -25,7 +24,7 @@ if(WIN32)
 
     set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch" CACHE PATH "Path to Torch directory")
     set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" CACHE PATH "Path to CUDA Toolkit directory")
-    set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.4/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
+    set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
     set(VCPKG_DIR "C:/Users/tjerf/vcpkg/installed/x64-windows" CACHE PATH "Path to VCPKG_DIR installation directory")
 
     # Add vcpkg and other paths
@@ -126,7 +125,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
 if(CUDA_FOUND)
     set_target_properties(RifeTensorRT PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
-        CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89"
+        CUDA_ARCHITECTURES "53;60;61;70;75;80;86;89"
     )
 endif()
 

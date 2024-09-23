@@ -28,6 +28,8 @@ public:
 	int getInterpolateFactor() const { return interpolateFactor; }
 	int getWidth() const { return width; }
 	int getHeight() const { return height; }
+	bool isFirstRun() const { return firstRun; }
+	torch::Tensor getRGBTensor() const { return rgb_tensor; }
 
 	FFmpegWriter& getWriter() { return writer; }
 
