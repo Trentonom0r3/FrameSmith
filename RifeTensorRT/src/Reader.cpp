@@ -155,7 +155,7 @@ void FFmpegReader::normalizeFrame() {
     // Add batch dimension to make it {1, 3, H, W}
     torch::Tensor batched = reshaped.unsqueeze(0);
 
-    // Convert to float and normalize
+    // Convert to float and normalize shape of {1, 3, H, W}
     intermediate_tensor = batched.to(intermediate_tensor.dtype()) // Convert to float16 or float32
         .div_(255.0)                                     // Normalize to [0,1]
         .clamp_(0.0, 1.0)                                // Clamp values

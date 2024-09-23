@@ -11,7 +11,7 @@
 void synchronizeStreams(RifeTensorRT& rifeTensorRT, FFmpegReader& reader){
     CUDA_CHECK(cudaStreamSynchronize(reader.getStream()));
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getInferenceStream()));
-    CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.getWriteInferenceStream()));
+  
     CUDA_CHECK(cudaStreamSynchronize(rifeTensorRT.writer.getStream()));
 }
 

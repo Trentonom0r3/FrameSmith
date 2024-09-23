@@ -65,11 +65,11 @@ private:
     int videoStreamIndex = -1;
     int width = 0, height = 0;
     double fps = 0.0;
-    int frameCount = 0;
+
     // Torch and CUDA components
     torch::Device device;
     bool halfPrecision;
-    int framecount = 0;
+
     // Intermediate tensors
     torch::Tensor rgb_tensor;          // For NV12 to RGB conversion
     torch::Tensor intermediate_tensor; // For reshaping and normalization
@@ -83,3 +83,4 @@ private:
     // Static callback for hardware format
     static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts);
 };
+
