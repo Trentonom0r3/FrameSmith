@@ -108,6 +108,8 @@ elseif(UNIX)
         ${TENSORRT_DIR}/lib/libnvinfer${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvinfer_plugin${LIB_SUFFIX}
         ${TENSORRT_DIR}/lib/libnvonnxparser${LIB_SUFFIX}
+        
+        atomic
     )
 endif()
 
