@@ -1,8 +1,8 @@
-# RifeTensorRT
+# FrameSmith
 
 ## Overview
 
-RifeTensorRT is a high-performance C++ application for video frame interpolation using TensorRT and CUDA. The project leverages TensorRT for accelerated deep learning-based frame interpolation and utilizes FFmpeg for handling video input/output, including support for CUDA/NVENC acceleration. The application supports both Windows and Linux platforms and can be easily built using CMake and vcpkg for dependency management.
+FrameSmith is a high-performance C++ application for video frame interpolation using TensorRT and CUDA. The project leverages TensorRT for accelerated deep learning-based frame interpolation and utilizes FFmpeg for handling video input/output, including support for CUDA/NVENC acceleration. The application supports both Windows and Linux platforms and can be easily built using CMake and vcpkg for dependency management.
 
 ## Features
 
@@ -117,8 +117,8 @@ set(CMAKE_TOOLCHAIN_FILE "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
 1. **Clone the Project**:
    ```bash
-   git clone https://github.com/your-repository/RifeTensorRT.git
-   cd RifeTensorRT
+   git clone https://github.com/your-repository/FrameSmith.git
+   cd FrameSmith
    ```
 
 2. **Create a Build Directory**:
@@ -139,9 +139,9 @@ set(CMAKE_TOOLCHAIN_FILE "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
 5. **Running the Application**:
    - The executable will be located in the `build` directory. You can run it using:
-   ```bash
-   ./RifeTensorRT /path/to/input_video.mp4 /path/to/output_video.mp4 /model_name
-   ```
+```bash
+ ./FrameSmith <input_video_path> <output_video_path> --mode <upscale|interpolate> <model_name> <factor> [--half] [--benchmark]
+```
 
 6. **Ensure SO Files are in the Same Directory**:
    - The build process should automatically copy the necessary `.so` files to the output directory. If any `.so` files are missing, ensure they are in the same directory as the executable or set the `LD_LIBRARY_PATH` accordingly.
@@ -155,14 +155,14 @@ set(CMAKE_TOOLCHAIN_FILE "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake"
    
 2. **Run the docker**:
    ```bash
-   sudo docker run --privileged --gpus all -it --rm -v /path/to/RifeTensorRT/:/tensorrt/mount rife_cpp:latest
+   sudo docker run --privileged --gpus all -it --rm -v /path/to/FrameSmith/:/tensorrt/mount rife_cpp:latest
    ```
    
 ## Model Names
 
 You need to specify a model name when running the application. Available models include: (Note that not all are set up to work with the .exe yet)
 
-
+### Interpolation Models
 - `rife4.6-tensorrt`
 - `rife4.15-lite-tensorrt`
 - `rife4.17-tensorrt`
@@ -172,11 +172,15 @@ You need to specify a model name when running the application. Available models 
 - `rife4.22-tensorrt`
 - `rife4.22-lite-tensorrt`
 
+### Upscaling Models
+- `shufflecugan-tensorrt` 
+- `compact-tensorrt`
+
 Refer to the source code or documentation for a full list of supported models.
 
 ## Usage
 ```bash
-./RifeTensorRT /path/to/input_video.mp4 /path/to/output_video.mp4 model_name interpolation_factor [--benchmark]
+ ./FrameSmith <input_video_path> <output_video_path> --mode <upscale|interpolate> <model_name> <factor> [--half] [--benchmark]
 ```
 
 ## Troubleshooting
