@@ -9,6 +9,9 @@
 #include <iostream>
 #include <cuda_fp16.h> // Include CUDA half-precision support
 
+template <typename T>
+struct always_false : std::false_type {};
+
 // Forward declarations of custom CUDA functions
 extern "C" {
 #include <libavformat/avformat.h>
