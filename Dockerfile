@@ -36,6 +36,6 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git && cd ffmpeg && git switch relea
   make -j$(nproc) && make install -j$(nproc)
   
 # compile
-RUN git clone https://github.com/styler00dollar/RifeTensorRT
-RUN cd RifeTensorRT/RifeTensorRT && mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DTorch_DIR=/tensorrt/pytorch/libtorch/share/cmake/Torch \
+RUN git clone https://github.com/styler00dollar/FrameSmith
+RUN cd FrameSmith/FrameSmith && mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DTorch_DIR=/tensorrt/pytorch/libtorch/share/cmake/Torch \
   -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda -DTENSORRT_DIR=/usr/local/tensorrt/ -DFFMPEG_DIR=/usr/local/bin && make -j$(nproc)

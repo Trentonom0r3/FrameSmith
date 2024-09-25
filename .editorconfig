@@ -1,0 +1,36 @@
+# Root EditorConfig file for C++ style
+root = true
+
+# All files
+[*]
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# C++ files
+[*.cpp,*.h]
+indent_style = space
+indent_size = 4
+continuation_indent_size = 4
+max_line_length = 120
+
+# Place opening brace on the same line and closing brace on the next line
+cpp_style_braces = false
+
+# Insert space before opening parentheses for function declarations/definitions
+cpp_space_before_function_paren = true
+
+# Don't insert space between function name and parentheses in function calls
+cpp_space_before_function_call_paren = false
+
+# Ensure space between keywords and opening parentheses
+cpp_space_before_keywords = true
+
+# Space around operators
+cpp_space_around_operators = true
+
+# Remove extra spaces after opening and before closing parentheses
+cpp_remove_space_inside_parens = true
+
+# Prefer using explicit over implicit keyword declarations for single-argument constructors
+cpp_explicit_ctor = true
