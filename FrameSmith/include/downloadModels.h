@@ -12,30 +12,25 @@
 
 namespace fs = std::filesystem;
 
+inline const std::string TASURL = "https://github.com/NevermindNilas/TAS-Modes-Host/releases/download/main/";
+inline const std::string DEPTHURL = "https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/";
+inline const std::string SUDOURL = "https://github.com/styler00dollar/VSGAN-tensorrt-docker/releases/download/models/";
+
+inline const std::string DEPTHV2URLSMALL = "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/";
+inline const std::string DEPTHV2URLBASE = "https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/";
+inline const std::string DEPTHV2URLLARGE = "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/";
+
 
 inline std::vector<std::string> modelsList() {
     return {
         // Add all the models listed in the Python code
-        "shufflespan", "shufflespan-directml", "shufflespan-tensorrt",
-        "aniscale2", "aniscale2-directml", "aniscale2-tensorrt",
-        "open-proteus", "compact", "ultracompact", "superultracompact", "span",
-        "shufflecugan", "segment", "segment-tensorrt", "segment-directml",
-        "scunet", "dpir", "real-plksr", "nafnet", "rife", "rife4.6",
-        "rife4.15-lite", "rife4.16-lite", "rife4.17", "rife4.18",
-        "rife4.20", "rife4.21", "rife4.22", "rife4.22-lite",
-        "shufflecugan-directml", "open-proteus-directml", "compact-directml",
-        "ultracompact-directml", "superultracompact-directml", "span-directml",
+        "shufflespan-tensorrt",
+         "aniscale2-tensorrt",
         "open-proteus-tensorrt", "shufflecugan-tensorrt", "compact-tensorrt",
         "ultracompact-tensorrt", "superultracompact-tensorrt", "span-tensorrt",
         "rife4.6-tensorrt", "rife4.15-lite-tensorrt", "rife4.17-tensorrt",
         "rife4.18-tensorrt", "rife4.20-tensorrt", "rife4.21-tensorrt",
-        "rife4.22-tensorrt", "rife4.22-lite-tensorrt", "rife-v4.6-ncnn",
-        "rife-v4.15-lite-ncnn", "rife-v4.16-lite-ncnn", "rife-v4.17-ncnn",
-        "rife-v4.18-ncnn", "span-ncnn", "shufflecugan-ncnn", "small_v2",
-        "base_v2", "large_v2", "small_v2-directml", "base_v2-directml",
-        "large_v2-directml", "small_v2-tensorrt", "base_v2-tensorrt",
-        "large_v2-tensorrt", "maxxvit-tensorrt", "maxxvit-directml",
-        "shift_lpips-tensorrt", "shift_lpips-directml", "differential-tensorrt"
+        "rife4.22-tensorrt", "rife4.22-lite-tensorrt"
     };
 }
 
@@ -71,9 +66,6 @@ inline std::string modelsMap(const std::string& model, const std::string& modelT
         else if (modelType == "onnx") {
             return half ? "2x_ModernSpanimationV1.5_clamp_fp16_op20_onnxslim.onnx" : "2x_ModernSpanimationV1.5_clamp_op20_onnxslim.onnx";
         }
-        else if (modelType == "ncnn") {
-            return "2x_modernspanimationv1.5-ncnn.zip";
-        }
     }
     else if (model == "shufflecugan" || model == "shufflecugan-directml" || model == "shufflecugan-tensorrt" || model == "shufflecugan-ncnn") {
         if (modelType == "pth") {
@@ -81,9 +73,6 @@ inline std::string modelsMap(const std::string& model, const std::string& modelT
         }
         else if (modelType == "onnx") {
             return half ? "sudo_shuffle_cugan_fp16_op18_clamped_9.584.969.onnx" : "sudo_shuffle_cugan_op18_clamped_9.584.969.onnx";
-        }
-        else if (modelType == "ncnn") {
-            return "2xsudo_shuffle_cugan-ncnn.zip";
         }
     }
     else if (model == "rife4.22-lite" || model == "rife4.22-lite-tensorrt") {
@@ -128,59 +117,16 @@ inline std::string modelsMap(const std::string& model, const std::string& modelT
             (half ? (ensemble ? "rife46_v2_ensembleTrue_op16_fp16_mlrt_sim.onnx" : "rife46_v2_ensembleFalse_op16_fp16_mlrt_sim.onnx")
                 : (ensemble ? "rife46_v2_ensembleTrue_op16_mlrt_sim.onnx" : "rife46_v2_ensembleFalse_op16_mlrt_sim.onnx"));
     }
-    else if (model == "rife4.16-lite" || model == "rife-v4.16-lite-ncnn") {
-        return (modelType == "pth") ? "rife416_lite.pth" :
-            (ensemble ? "rife-v4.16-lite-ensemble-ncnn.zip" : "rife-v4.16-lite-ncnn.zip");
-    }
     else if (model == "rife4.22" || model == "rife4.22-tensorrt") {
 		return (modelType == "pth") ? "rife422.pth" :
 			(half ? (ensemble ? "rife422_v2_ensembleTrue_op20_fp16_clamp_onnxslim.onnx" : "rife422_v2_ensembleFalse_op20_fp16_clamp_onnxslim.onnx")
 				: (ensemble ? "rife422_v2_ensembleTrue_op20_clamp_onnxslim.onnx" : "rife422_v2_ensembleFalse_op20_clamp_onnxslim.onnx"));
 	}
-    else if (model == "segment-tensorrt" || model == "segment-directml") {
-        return "isnet_is.onnx";
-    }
-    else if (model == "maxxvit-tensorrt" || model == "maxxvit-directml") {
-        return half ? "maxxvitv2_rmlp_base_rw_224.sw_in12k_b80_224px_20k_coloraug0.4_6ch_clamp_softmax_fp16_op17_onnxslim.onnx" :
-            "maxxvitv2_rmlp_base_rw_224.sw_in12k_b80_224px_20k_coloraug0.4_6ch_clamp_softmax_op17_onnxslim.onnx";
-    }
-    else if (model == "shift_lpips-tensorrt" || model == "shift_lpips-directml") {
-        return half ? "sc_shift_lpips_alex_256px_CHW_6ch_clamp_op20_fp16_onnxslim.onnx" :
-            "sc_shift_lpips_alex_256px_CHW_6ch_clamp_op20_onnxslim.onnx";
-    }
-    else if (model == "differential-tensorrt") {
-        return "scene_change_nilas.onnx";
-    }
-    else if (model == "small_v2") {
-        return "depth_anything_v2_vits.pth";
-    }
-    else if (model == "base_v2") {
-        return "depth_anything_v2_vitb.pth";
-    }
-    else if (model == "large_v2") {
-        return "depth_anything_v2_vitl.pth";
-    }
-    else if (model == "small_v2-directml" || model == "small_v2-tensorrt") {
-        return half ? "depth_anything_v2_vits14_float16_slim.onnx" : "depth_anything_v2_vits14_float32_slim.onnx";
-    }
-    else if (model == "base_v2-directml" || model == "base_v2-tensorrt") {
-        return half ? "depth_anything_v2_vitb14_float16_slim.onnx" : "depth_anything_v2_vitb14_float32_slim.onnx";
-    }
-    else if (model == "large_v2-directml" || model == "large_v2-tensorrt") {
-        return half ? "depth_anything_v2_vitl14_float16_slim.onnx" : "depth_anything_v2_vitl14_float32_slim.onnx";
-    }
     else {
         std::cerr << "Model not found: " << model << std::endl;
         return "";
     }
 }// Define the URLs
-inline const std::string TASURL = "https://github.com/NevermindNilas/TAS-Modes-Host/releases/download/main/";
-inline const std::string DEPTHURL = "https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/";
-inline const std::string SUDOURL = "https://github.com/styler00dollar/VSGAN-tensorrt-docker/releases/download/models/";
-
-inline const std::string DEPTHV2URLSMALL = "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/";
-inline const std::string DEPTHV2URLBASE = "https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/";
-inline const std::string DEPTHV2URLLARGE = "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/";
 
 // Helper function to get the download path and create directories if needed
 inline std::string getWeightsDir() {
@@ -350,20 +296,6 @@ inline std::string downloadModels(const std::string& model, const std::string& m
             throw std::runtime_error("Failed to download model from both SUDOURL and TASURL.");
         }
     }
-    else if (model == "small_v2") {
-        fullUrl = DEPTHV2URLSMALL + filename;
-    }
-    else if (model == "base_v2") {
-        fullUrl = DEPTHV2URLBASE + filename;
-    }
-    else if (model == "large_v2") {
-        fullUrl = DEPTHV2URLLARGE + filename;
-    }
-    else {
-        fullUrl = TASURL + filename;
-        std::cout << "Downloading from TASURL: " << fullUrl << std::endl;
-    }
-
     if (!downloadAndLog(model, filename, fullUrl, folderPath).empty()) {
         std::cout << "Downloaded from TASURL: " << fullUrl << std::endl;
         return fullUrl;

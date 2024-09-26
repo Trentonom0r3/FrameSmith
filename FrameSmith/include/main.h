@@ -14,7 +14,7 @@
 
 
 inline void printASCII() {
-    std::cout << R"(
+    std::cout << gradient(R"(
 
 
 
@@ -31,15 +31,15 @@ inline void printASCII() {
                                  Interpolation and Upscaling for C++ with TensorRT.
                              Created by: @Trentonom0r3 - https://github.com/Trentonom0r3
                                Source: https://github.com/Trentonom0r3/RifeTensorRT                                                                                                                                                                                                             
-        )" << std::endl;
+        )") << std::endl;
 }
 
 // Function to display usage instructions
 inline void printUsage(const std::string& programName) {
-    std::cerr << "Usage: " << programName
-        << " <input_video_path> <output_video_path> --mode <upscale|interpolate> <model_name> <factor> [--half] [--benchmark]"
-        << std::endl;
-    std::cerr << "Example: " << programName
-        << " input.mp4 output.mp4 --mode upscale shufflecugan-tensorrt 2 --half --benchmark"
+    std::cerr << yellow("Usage: ") << blue(programName)
+        << yellow(" <input_video_path> <output_video_path> --mode <upscale|interpolate> <model_name> <factor> [--half] [--benchmark]"
+        )<< std::endl;
+    std::cerr << yellow("Example: ") << blue(programName)
+        << yellow(" input.mp4 output.mp4 --mode upscale shufflecugan-tensorrt 2 --half --benchmark")
         << std::endl;
 }
