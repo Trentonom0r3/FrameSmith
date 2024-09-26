@@ -1,4 +1,4 @@
-﻿{
+{
   "version": 3,
   "configurePresets": [
     {
@@ -12,13 +12,13 @@
         "CMAKE_C_COMPILER": "cl.exe",
         "CMAKE_CXX_COMPILER": "cl.exe"
       },
+      "environment": {
+        "TORCH_USE_CUDA_DSA": "1" // Add the environment variable here
+      },
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
-      },
-      "environment": {
-        "TORCH_USE_CUDA_DSA": "1"  // Add the environment variable here
       }
     },
     {
@@ -31,7 +31,15 @@
         "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "Protobuf_PROTOC_EXECUTABLE": "C:/Users/tjerf/vcpkg/installed/x64-windows/tools/protobuf/protoc.exe",
+        "Torch_DIR": "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch",
+        "CUDA_TOOLKIT_ROOT_DIR": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1",
+        "TENSORRT_DIR": "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26",
+        "VCPKG_DIR": "C:/Users/tjerf/vcpkg/installed/x64-windows",
+        "FFMPEG_LIB_DIR": "C:/Users/tjerf/vcpkg/installed/x64-windows/lib",
+        "FFMPEG_INCLUDE_DIR": "C:/Users/tjerf/vcpkg/installed/x64-windows/include"
       }
     },
     {
@@ -53,7 +61,15 @@
         "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "Protobuf_PROTOC_EXECUTABLE": "C:/Users/tjerf/vcpkg/installed/x64-windows/tools/protobuf/protoc.exe",
+        "Torch_DIR": "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch",
+        "CUDA_TOOLKIT_ROOT_DIR": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1",
+        "TENSORRT_DIR": "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26",
+        "VCPKG_DIR": "C:/Users/tjerf/vcpkg/installed/x64-windows",
+        "FFMPEG_LIB_DIR": "C:/Users/tjerf/vcpkg/installed/x64-windows/lib",
+        "FFMPEG_INCLUDE_DIR": "C:/Users/tjerf/vcpkg/installed/x64-windows/include"
       }
     },
     {
