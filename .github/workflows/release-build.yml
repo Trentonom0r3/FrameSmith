@@ -29,7 +29,17 @@ jobs:
         shell: cmd  # Use cmd shell to run .bat files
         run: |
           vcpkg\bootstrap-vcpkg.bat
-          vcpkg\vcpkg.exe install --triplet x64-windows
+          vcpkg\vcpkg.exe install
+
+      - name: Download and Extract Torch (Windows)
+        run: |
+          curl -L -o libtorch.zip https://download.pytorch.org/libtorch/cu121/libtorch-win-shared-with-deps-2.0.0.zip
+          tar -xf libtorch.zip -C ${GITHUB_WORKSPACE}
+
+      - name: Download and Extract TensorRT (Windows)
+        run: |
+          curl -L -o tensorrt.zip https://developer.download.nvidia.com/compute/redist/tensorrt/10.x/TensorRT-10.x.x.x.Windows.zip
+          tar -xf tensorrt.zip -C ${GITHUB_WORKSPACE}
 
       - name: Set up CUDA
         run: |
@@ -41,20 +51,20 @@ jobs:
 
       - name: Configure CMake (Windows)
         run: |
-          cmake -S . -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=%CD%/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release
+          cmake -S ${GITHUB_WORKSPACE} -B ${GITHUB_WORKSPACE}/out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/TensorRT" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Windows)
         run: |
-          cmake --build out/build/x64-release --config Release
+          cmake --build ${GITHUB_WORKSPACE}/out/build/x64-release --config Release
 
       - name: Copy dependencies (Windows)
         run: |
-          xcopy /S /Y "%CD%\vcpkg\installed\x64-windows\bin\*.dll" "out/build/x64-release/"
-          xcopy /S /Y "$Env:CUDA_TOOLKIT_ROOT_DIR\bin\*.dll" "out/build/x64-release/"
+          xcopy /S /Y "${GITHUB_WORKSPACE}\vcpkg\installed\x64-windows\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\"
+          xcopy /S /Y "$Env:CUDA_TOOLKIT_ROOT_DIR\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\"
 
       - name: Create zip archive (Windows)
         run: |
-          Compress-Archive -Path out/build/x64-release/* -DestinationPath FrameSmith-Windows.zip
+          Compress-Archive -Path ${GITHUB_WORKSPACE}/out/build/x64-release/* -DestinationPath FrameSmith-Windows.zip
 
       - name: Upload build artifacts (Windows)
         uses: actions/upload-artifact@v3
@@ -81,26 +91,41 @@ jobs:
       - name: List vcpkg directory contents
         run: ls vcpkg
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
       - name: Install vcpkg dependencies (Linux)
         run: |
           ./vcpkg/bootstrap-vcpkg.sh
-          ./vcpkg/vcpkg install --triplet x64-linux
+          ./vcpkg/vcpkg install
+
+      - name: Download and Extract Torch (Linux)
+        run: |
+          curl -L -o libtorch.tar.gz https://download.pytorch.org/libtorch/cu121/libtorch-shared-with-deps-2.0.0.tar.gz
+          tar -xzf libtorch.tar.gz -C ${GITHUB_WORKSPACE}
+
+      - name: Download and Extract TensorRT (Linux)
+        run: |
+          curl -L -o tensorrt.tar.gz https://developer.download.nvidia.com/compute/redist/tensorrt/10.x/TensorRT-10.x.x.x.Ubuntu-20.04.tar.gz
+          tar -xzf tensorrt.tar.gz -C ${GITHUB_WORKSPACE}
 
       - name: Configure CMake (Linux)
         run: |
-          cmake -S . -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_BUILD_TYPE=Release
+          cmake -S ${GITHUB_WORKSPACE} -B ${GITHUB_WORKSPACE}/out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/TensorRT" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Linux)
         run: |
-          cmake --build out/build/x64-release --config Release
+          cmake --build ${GITHUB_WORKSPACE}/out/build/x64-release --config Release
 
       - name: Copy dependencies (Linux)
         run: |
-          cp ${GITHUB_WORKSPACE}/vcpkg/installed/x64-linux/lib/*.so* out/build/x64-release/
+          cp ${GITHUB_WORKSPACE}/vcpkg/installed/x64-linux/lib/*.so* ${GITHUB_WORKSPACE}/out/build/x64-release/
 
       - name: Create zip archive (Linux)
         run: |
-          zip -r FrameSmith-Linux.zip out/build/x64-release/*
+          zip -r FrameSmith-Linux.zip ${GITHUB_WORKSPACE}/out/build/x64-release/*
 
       - name: Upload build artifacts (Linux)
         uses: actions/upload-artifact@v3
