@@ -19,36 +19,50 @@ jobs:
 
       # Debug steps
       - name: List directory contents
-        run: dir
+        run: dir /S
 
       - name: List vcpkg directory contents
         run: dir vcpkg
 
-      - name: Download and Extract Torch (Windows)
-        env:
-          WORKSPACE: ${{ github.workspace }}
-        run: |
-          curl -L -o libtorch.zip https://download.pytorch.org/libtorch/cu124/libtorch-win-shared-with-deps-2.4.0.zip
-          powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${env:WORKSPACE}'"
-
-      - name: Download and Extract TensorRT (Windows)
-        env:
-          WORKSPACE: ${{ github.workspace }}
-        run: |
-          curl -L -o tensorrt.zip https://developer.download.nvidia.com/compute/redist/tensorrt/10.3.0/TensorRT-10.3.0.26.Windows.zip
-          powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${env:WORKSPACE}'"
-
-      - name: Set up CUDA
-        run: |
-          $Env:CUDA_TOOLKIT_ROOT_DIR = "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1"
-
+      # Install dependencies
       - name: Install dependencies
         run: |
           choco install -y cmake ninja
 
+      # Install CUDA Toolkit
+      - name: Install CUDA Toolkit
+        uses: danielpalme/Setup-CUDA@v1
+        with:
+          cuda-version: 12.1  # Specify the required CUDA version
+
+      # Download and Extract Torch (Windows)
+      - name: Download and Extract Torch (Windows)
+        env:
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          curl -L -o libtorch.zip "https://download.pytorch.org/libtorch/cu124/libtorch-win-shared-with-deps-2.4.0+cu124.zip"
+          powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${env:WORKSPACE}'"
+
+      # Download and Extract TensorRT (Windows)
+      - name: Download and Extract TensorRT (Windows)
+        env:
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          curl -L -o tensorrt.zip "https://developer.download.nvidia.com/compute/redist/tensorrt/10.3.0/TensorRT-10.3.0.26.Windows.zip"
+          powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${env:WORKSPACE}'"
+
+      # Set up CUDA Environment Variable (Optional)
+      - name: Set up CUDA Environment Variable
+        run: |
+          echo "CUDA_TOOLKIT_ROOT_DIR=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" >> $GITHUB_ENV
+
       - name: Configure CMake (Windows)
         run: |
-          cmake -S FrameSmith -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_PREFIX_PATH="${{ github.workspace }}/libtorch;${{ github.workspace }}/TensorRT" -DCMAKE_BUILD_TYPE=Release
+          cmake -S FrameSmith -B out/build/x64-release \
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows \
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/libtorch;${{ github.workspace }}/TensorRT" \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Windows)
         run: |
@@ -57,7 +71,7 @@ jobs:
       - name: Copy dependencies (Windows)
         run: |
           xcopy /S /Y "${GITHUB_WORKSPACE}\vcpkg\installed\x64-windows\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\"
-          xcopy /S /Y "$Env:CUDA_TOOLKIT_ROOT_DIR\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\"
+          xcopy /S /Y "${CUDA_TOOLKIT_ROOT_DIR}\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\"
 
       - name: Create zip archive (Windows)
         run: |
@@ -82,7 +96,7 @@ jobs:
 
       # Debug steps
       - name: List directory contents
-        run: ls
+        run: ls -R
 
       - name: List vcpkg directory contents
         run: ls vcpkg
@@ -102,7 +116,7 @@ jobs:
 
       - name: Download and Extract Torch (Linux)
         run: |
-          curl -L -o libtorch.tar.gz https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0%2Bcu124.tar.gz
+          curl -L -o libtorch.tar.gz "https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0+cu124.tar.gz"
           tar -xzf libtorch.tar.gz -C $GITHUB_WORKSPACE
 
       - name: Download and Extract TensorRT (Linux)
@@ -124,7 +138,11 @@ jobs:
 
       - name: Configure CMake (Linux)
         run: |
-          cmake -S ${GITHUB_WORKSPACE}/FrameSmith -B ${GITHUB_WORKSPACE}/out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/tensorrt" -DCMAKE_BUILD_TYPE=Release
+          cmake -S ${GITHUB_WORKSPACE}/FrameSmith -B ${GITHUB_WORKSPACE}/out/build/x64-release \
+            -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/tensorrt" \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Linux)
         run: |
