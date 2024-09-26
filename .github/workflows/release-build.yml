@@ -3,7 +3,7 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*'  # Triggers the workflow on tag push (e.g., v1.0.0)
+      - 'v*'
 
 jobs:
   build-windows:
@@ -12,12 +12,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up vcpkg
-        uses: lukka/get-vcpkg@v10
-        with:
-          vcpkgDirectory: '${{ runner.temp }}/vcpkg'
-          vcpkgTriplet: 'x64-windows'
-          cleanAfterBuild: true
+      - name: Initialize submodules
+        run: git submodule update --init --recursive
+
+      - name: Install vcpkg dependencies (Windows)
+        run: |
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg.exe install --triplet x64-windows
 
       - name: Set up CUDA
         run: |
@@ -29,7 +30,7 @@ jobs:
 
       - name: Configure CMake (Windows)
         run: |
-          cmake --preset x64-release
+          cmake -S . -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=%CD%/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Windows)
         run: |
@@ -37,7 +38,7 @@ jobs:
 
       - name: Copy dependencies (Windows)
         run: |
-          xcopy /S /Y "${{ runner.temp }}\vcpkg\installed\x64-windows\bin\*.dll" "out/build/x64-release/"
+          xcopy /S /Y "%CD%\vcpkg\installed\x64-windows\bin\*.dll" "out/build/x64-release/"
           xcopy /S /Y "$Env:CUDA_TOOLKIT_ROOT_DIR\bin\*.dll" "out/build/x64-release/"
 
       - name: Create zip archive (Windows)
@@ -56,21 +57,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Initialize submodules
+        run: git submodule update --init --recursive
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      - name: Set up vcpkg
-        uses: lukka/get-vcpkg@v10
-        with:
-          vcpkgDirectory: '${{ runner.temp }}/vcpkg'
-          vcpkgTriplet: 'x64-linux'
-          cleanAfterBuild: true
+      - name: Install vcpkg dependencies (Linux)
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh
+          ./vcpkg/vcpkg install --triplet x64-linux
 
       - name: Configure CMake (Linux)
         run: |
-          cmake --preset x64-release
+          cmake -S . -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Linux)
         run: |
@@ -78,7 +80,7 @@ jobs:
 
       - name: Copy dependencies (Linux)
         run: |
-          cp ${{ runner.temp }}/vcpkg/installed/x64-linux/lib/*.so* out/build/x64-release/
+          cp ${GITHUB_WORKSPACE}/vcpkg/installed/x64-linux/lib/*.so* out/build/x64-release/
 
       - name: Create zip archive (Linux)
         run: |
