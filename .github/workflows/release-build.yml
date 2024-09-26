@@ -12,21 +12,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          submodules: true  # Ensure submodules are checked out
+          submodules: true
 
       - name: Initialize submodules
         run: git submodule update --init --recursive
 
-      # Debug step: List directory contents to verify the presence of vcpkg
+      # Debug steps
       - name: List directory contents
         run: dir
 
-      # Debug step: List contents of vcpkg directory
       - name: List vcpkg directory contents
         run: dir vcpkg
 
       - name: Install vcpkg dependencies (Windows)
-        shell: cmd  # Use cmd shell to run .bat files
+        shell: cmd
         run: |
           vcpkg\bootstrap-vcpkg.bat
           vcpkg\vcpkg.exe install
@@ -34,12 +33,12 @@ jobs:
       - name: Download and Extract Torch (Windows)
         run: |
           curl -L -o libtorch.zip https://download.pytorch.org/libtorch/cu121/libtorch-win-shared-with-deps-2.0.0.zip
-          tar -xf libtorch.zip -C ${GITHUB_WORKSPACE}
+          powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${GITHUB_WORKSPACE}'"
 
       - name: Download and Extract TensorRT (Windows)
         run: |
           curl -L -o tensorrt.zip https://developer.download.nvidia.com/compute/redist/tensorrt/10.x/TensorRT-10.x.x.x.Windows.zip
-          tar -xf tensorrt.zip -C ${GITHUB_WORKSPACE}
+          powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${GITHUB_WORKSPACE}'"
 
       - name: Set up CUDA
         run: |
@@ -78,16 +77,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          submodules: true  # Ensure submodules are checked out
+          submodules: true
 
       - name: Initialize submodules
         run: git submodule update --init --recursive
 
-      # Debug step: List directory contents to verify the presence of vcpkg
+      # Debug steps
       - name: List directory contents
         run: ls
 
-      # Debug step: List contents of vcpkg directory
       - name: List vcpkg directory contents
         run: ls vcpkg
 
@@ -99,7 +97,7 @@ jobs:
       - name: Install vcpkg dependencies (Linux)
         run: |
           ./vcpkg/bootstrap-vcpkg.sh
-          ./vcpkg/vcpkg install
+          ./vcpkg/vcpkg install --triplet x64-linux
 
       - name: Download and Extract Torch (Linux)
         run: |
