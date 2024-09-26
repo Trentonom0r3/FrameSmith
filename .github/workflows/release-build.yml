@@ -3,31 +3,40 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*'  # Triggers the workflow on tag pushes like v1.0.0
+
+env:
+  # Define environment variables for versions and URLs
+  CUDA_VERSION_WINDOWS: "12.6.0"
+  CUDA_BUILD_WINDOWS: "560.76"
+  LIBTORCH_VERSION: "2.4.1"
+  LIBTORCH_CUDA_VERSION: "cu124"  # libtorch built with CUDA 12.4
+  TENSORRT_VERSION: "10.4.0.26"
+  CUDA_VERSION_LINUX: "12.6"  # CUDA version for TensorRT on Linux
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v3
         with:
           submodules: true
 
-      - name: Initialize submodules
+      - name: Initialize Submodules
         run: git submodule update --init --recursive
 
-      # Debug steps: List directory contents recursively
-      - name: List directory contents recursively
+      # Debug Step: List Directory Contents
+      - name: List Directory Contents
         shell: pwsh
         run: Get-ChildItem -Recurse
 
-      # Debug steps: List vcpkg directory contents
-      - name: List vcpkg directory contents
+      # Debug Step: List vcpkg Directory Contents
+      - name: List vcpkg Directory Contents
         shell: pwsh
         run: Get-ChildItem -Recurse vcpkg
 
-      # Install Chocolatey
+      # Install Chocolatey Package Manager
       - name: Install Chocolatey
         shell: pwsh
         run: |
@@ -35,8 +44,8 @@ jobs:
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
           iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
 
-      # Install dependencies via Chocolatey
-      - name: Install dependencies via Chocolatey
+      # Install Dependencies via Chocolatey
+      - name: Install Dependencies via Chocolatey
         shell: pwsh
         run: choco install cmake ninja -y
 
@@ -44,12 +53,12 @@ jobs:
       - name: Download CUDA Toolkit Installer (Windows)
         shell: pwsh
         run: |
-          $cuda_version = "12.6.0"
-          $cuda_build = "560.76"
+          $cuda_version = "${{ env.CUDA_VERSION_WINDOWS }}"
+          $cuda_build = "${{ env.CUDA_BUILD_WINDOWS }}"
           $cuda_url = "https://developer.download.nvidia.com/compute/cuda/${cuda_version}/local_installers/cuda_${cuda_version}_${cuda_build}_windows.exe"
           Write-Output "Attempting to download CUDA Toolkit from $cuda_url"
 
-          # Check if the URL is accessible
+          # Check URL Accessibility
           try {
             $response = Invoke-WebRequest -Uri $cuda_url -Method Head -UseBasicParsing -ErrorAction Stop
             Write-Output "URL exists. Proceeding with download."
@@ -59,7 +68,7 @@ jobs:
             exit 1
           }
 
-          # Download the installer
+          # Download the Installer
           Invoke-WebRequest -Uri $cuda_url -OutFile "cuda_installer.exe" -UseBasicParsing
 
       # Install CUDA Toolkit (Windows)
@@ -79,7 +88,7 @@ jobs:
       - name: Download and Extract libtorch (Windows)
         shell: pwsh
         run: |
-          $libtorch_url = "https://download.pytorch.org/libtorch/cu124/libtorch-win-shared-with-deps-2.4.1+cu124.zip"
+          $libtorch_url = "https://download.pytorch.org/libtorch/${{ env.LIBTORCH_CUDA_VERSION }}/libtorch-win-shared-with-deps-${{ env.LIBTORCH_VERSION }}+${{ env.LIBTORCH_CUDA_VERSION }}.zip"
           Write-Output "Downloading libtorch from $libtorch_url"
           curl -f -L -o libtorch.zip "$libtorch_url" || { Write-Error "Failed to download libtorch"; exit 1 }
           Expand-Archive -Path 'libtorch.zip' -DestinationPath "${env:GITHUB_WORKSPACE}"
@@ -89,7 +98,7 @@ jobs:
       - name: Download and Extract TensorRT (Windows)
         shell: pwsh
         run: |
-          $tensorrt_url = "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.4.0/zip/TensorRT-10.4.0.26.Windows.win10.cuda-12.6.zip"
+          $tensorrt_url = "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/${{ env.TENSORRT_VERSION }}/zip/TensorRT-${{ env.TENSORRT_VERSION }}.Windows.win10.cuda-12.6.zip"
           Write-Output "Downloading TensorRT from $tensorrt_url"
           curl -f -L -o tensorrt.zip "$tensorrt_url" || { Write-Error "Failed to download TensorRT"; exit 1 }
           Expand-Archive -Path 'tensorrt.zip' -DestinationPath "${env:GITHUB_WORKSPACE}"
@@ -99,7 +108,7 @@ jobs:
       - name: Set up CUDA Environment Variable
         shell: pwsh
         run: |
-          $env:CUDA_TOOLKIT_ROOT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+          $env:CUDA_TOOLKIT_ROOT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ env.CUDA_VERSION_WINDOWS }}"
           Add-Content -Path $env:GITHUB_ENV -Value "CUDA_TOOLKIT_ROOT_DIR=$env:CUDA_TOOLKIT_ROOT_DIR"
 
       # Configure CMake (Windows)
@@ -112,70 +121,72 @@ jobs:
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}/libtorch;${{ github.workspace }}/TensorRT" `
             -DCMAKE_BUILD_TYPE=Release
 
-      # Build project (Windows)
-      - name: Build project (Windows)
+      # Build Project (Windows)
+      - name: Build Project (Windows)
         shell: pwsh
         run: |
           cmake --build "${GITHUB_WORKSPACE}/out/build/x64-release" --config Release
 
-      # Copy dependencies (Windows)
-      - name: Copy dependencies (Windows)
+      # Copy Dependencies (Windows)
+      - name: Copy Dependencies (Windows)
         shell: pwsh
         run: |
           Copy-Item "${GITHUB_WORKSPACE}\vcpkg\installed\x64-windows\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\" -Recurse -Force
           Copy-Item "${env:CUDA_TOOLKIT_ROOT_DIR}\bin\*.dll" "${GITHUB_WORKSPACE}\out\build\x64-release\" -Recurse -Force
 
-      # Create zip archive (Windows)
-      - name: Create zip archive (Windows)
+      # Create Zip Archive (Windows)
+      - name: Create Zip Archive (Windows)
         shell: pwsh
         run: |
           Compress-Archive -Path "${GITHUB_WORKSPACE}/out/build/x64-release/*" -DestinationPath "FrameSmith-Windows.zip" -Force
 
-      # Upload build artifacts (Windows)
-      - name: Upload build artifacts (Windows)
+      # Upload Build Artifacts (Windows)
+      - name: Upload Build Artifacts (Windows)
         uses: actions/upload-artifact@v3
         with:
           name: FrameSmith_Windows_build
           path: FrameSmith-Windows.zip
 
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v3
         with:
           submodules: true
 
-      - name: Initialize submodules
+      - name: Initialize Submodules
         run: git submodule update --init --recursive
 
-      # Debug steps: List directory contents recursively
-      - name: List directory contents recursively
+      # Debug Step: List Directory Contents
+      - name: List Directory Contents
         run: ls -R
 
-      # Debug steps: List vcpkg directory contents
-      - name: List vcpkg directory contents
+      # Debug Step: List vcpkg Directory Contents
+      - name: List vcpkg Directory Contents
         run: ls vcpkg
 
-      # Install dependencies and prepare environment
-      - name: Install essential tools (Linux)
+      # Install Essential Tools (Linux)
+      - name: Install Essential Tools (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build nasm pkg-config build-essential manpages-dev software-properties-common unzip
+          sudo apt-get install -y cmake ninja-build nasm pkg-config build-essential manpages-dev software-properties-common unzip curl
 
+      # Install GCC 13 (Linux)
       - name: Install GCC 13 (Linux)
         run: |
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
-          sudo apt-get update && sudo apt-get install -y gcc-13 g++-13
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 13
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 13
 
       # Download and Extract libtorch (Linux)
       - name: Download and Extract libtorch (Linux)
         run: |
-          LIBTORCH_VERSION="2.4.1"    # Update to the required version
-          CUDA_VERSION="cu124"        # libtorch built with CUDA 12.4
-          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
+          LIBTORCH_VERSION="${{ env.LIBTORCH_VERSION }}"
+          CUDA_VERSION="${{ env.LIBTORCH_CUDA_VERSION }}"
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}+${CUDA_VERSION}.zip"
           echo "Downloading libtorch from $LIBTORCH_URL"
           curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
           file libtorch.zip
@@ -185,14 +196,23 @@ jobs:
       # Download and Install TensorRT (Linux)
       - name: Download and Install TensorRT (Linux)
         run: |
-          TENSORRT_VERSION="10.4.0.26"    # Update to the required version
-          CUDA_VERSION="12.6"             # TensorRT built with CUDA 12.6
+          TENSORRT_VERSION="${{ env.TENSORRT_VERSION }}"
+          CUDA_VERSION="${{ env.CUDA_VERSION_LINUX }}"
           TENSORRT_URL="https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.4.0/local_repo/nv-tensorrt-local-repo-ubuntu2004-10.4.0-cuda-12.6_1.0-1_amd64.deb"
           echo "Downloading TensorRT from $TENSORRT_URL"
           curl -f -L -o tensorrt.deb "$TENSORRT_URL" || { echo "Failed to download TensorRT"; exit 1; }
           sudo dpkg -i tensorrt.deb || { echo "Failed to install TensorRT .deb package"; exit 1; }
-          sudo apt-get update
-          sudo apt-get install -y libnvinfer8 libnvonnxparser8 libnvinfer-plugin8
+
+          # Copy the GPG key to the keyrings directory
+          sudo cp /var/nv-tensorrt-local-repo-ubuntu2004-10.4.0-cuda-12.6/nv-tensorrt-local-A88B7455-keyring.gpg /usr/share/keyrings/
+
+          # Update apt repositories
+          sudo apt-get update || { echo "apt-get update failed"; exit 1; }
+
+          # Install TensorRT libraries
+          sudo apt-get install -y libnvinfer8 libnvonnxparser8 libnvinfer-plugin8 || { echo "Failed to install TensorRT packages"; exit 1; }
+
+          # Clean up the .deb package
           rm tensorrt.deb
 
       # Install nv-codec-headers (Linux)
@@ -204,13 +224,13 @@ jobs:
           cd ..
           rm -rf nv-codec-headers
 
-      # Install vcpkg dependencies
-      - name: Install vcpkg dependencies (Linux)
+      # Install vcpkg Dependencies (Linux)
+      - name: Install vcpkg Dependencies (Linux)
         run: |
           ./vcpkg/bootstrap-vcpkg.sh
           ./vcpkg/vcpkg install --triplet x64-linux
 
-      # Configure CMake
+      # Configure CMake (Linux)
       - name: Configure CMake (Linux)
         run: |
           cmake -S FrameSmith -B out/build/x64-release \
@@ -219,23 +239,23 @@ jobs:
             -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/tensorrt" \
             -DCMAKE_BUILD_TYPE=Release
 
-      # Build project (Linux)
-      - name: Build project (Linux)
+      # Build Project (Linux)
+      - name: Build Project (Linux)
         run: |
           cmake --build ${GITHUB_WORKSPACE}/out/build/x64-release --config Release
 
-      # Copy dependencies (Linux)
-      - name: Copy dependencies (Linux)
+      # Copy Dependencies (Linux)
+      - name: Copy Dependencies (Linux)
         run: |
           cp ${GITHUB_WORKSPACE}/vcpkg/installed/x64-linux/lib/*.so* ${GITHUB_WORKSPACE}/out/build/x64-release/
 
-      # Create zip archive (Linux)
-      - name: Create zip archive (Linux)
+      # Create Zip Archive (Linux)
+      - name: Create Zip Archive (Linux)
         run: |
           zip -r FrameSmith-Linux.zip ${GITHUB_WORKSPACE}/out/build/x64-release/*
 
-      # Upload build artifacts (Linux)
-      - name: Upload build artifacts (Linux)
+      # Upload Build Artifacts (Linux)
+      - name: Upload Build Artifacts (Linux)
         uses: actions/upload-artifact@v3
         with:
           name: FrameSmith_Linux_build
@@ -245,23 +265,25 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-windows, build-linux]
     steps:
-      - name: Download Windows build
+      - name: Download Windows Build Artifact
         uses: actions/download-artifact@v3
         with:
           name: FrameSmith_Windows_build
-          path: .
+          path: ./windows_build
 
-      - name: Download Linux build
+      - name: Download Linux Build Artifact
         uses: actions/download-artifact@v3
         with:
           name: FrameSmith_Linux_build
-          path: .
+          path: ./linux_build
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          assets: |
-            FrameSmith-Windows.zip
-            FrameSmith-Linux.zip
+          draft: false
+          prerelease: false
+          artifacts: |
+            ./windows_build/FrameSmith-Windows.zip
+            ./linux_build/FrameSmith-Linux.zip
