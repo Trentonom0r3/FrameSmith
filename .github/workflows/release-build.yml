@@ -11,8 +11,8 @@ env:
   CUDA_BUILD_WINDOWS: "560.76"
   LIBTORCH_VERSION: "2.4.1"
   LIBTORCH_CUDA_VERSION: "cu124"  # libtorch built with CUDA 12.4
-  TENSORRT_VERSION: "10.4.0"      # Corrected version
-  CUDA_VERSION_LINUX: "12.6"      # CUDA version for TensorRT on Linux
+  TENSORRT_VERSION: "10.4.0.26"
+  CUDA_VERSION_LINUX: "12.6"  # CUDA version for TensorRT on Linux
 
 jobs:
   build-windows:
@@ -233,7 +233,7 @@ jobs:
             LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
             echo "Downloading libtorch from $LIBTORCH_URL"
             curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
-            # Save to cache by not deleting the zip
+            # Save to cache
           fi
           file libtorch.zip
           unzip libtorch.zip -d $GITHUB_WORKSPACE || { echo "Failed to unzip libtorch"; exit 1; }
@@ -256,7 +256,7 @@ jobs:
           sudo apt-get update || { echo "apt-get update failed"; exit 1; }
 
           # Install TensorRT libraries
-          sudo apt-get install -y libnvinfer10 libnvonnxparser libnvinfer-plugin10 || { echo "Failed to install TensorRT packages"; exit 1; }
+          sudo apt-get install -y libnvinfer10 libnvonnxparser_10 libnvinfer-plugin10 || { echo "Failed to install TensorRT packages"; exit 1; }
 
           # Clean up the .deb package
           rm tensorrt.deb
