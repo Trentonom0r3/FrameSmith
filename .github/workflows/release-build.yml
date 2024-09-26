@@ -11,14 +11,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          submodules: true  # Ensure submodules are checked out
 
       - name: Initialize submodules
         run: git submodule update --init --recursive
 
       - name: Install vcpkg dependencies (Windows)
         run: |
-          .\vcpkg\bootstrap-vcpkg.bat
-          .\vcpkg\vcpkg.exe install --triplet x64-windows
+          vcpkg\bootstrap-vcpkg.bat  # Ensure this command is correct
+          vcpkg\vcpkg.exe install --triplet x64-windows
 
       - name: Set up CUDA
         run: |
@@ -56,6 +58,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          submodules: true  # Ensure submodules are checked out
 
       - name: Initialize submodules
         run: git submodule update --init --recursive
@@ -67,7 +71,7 @@ jobs:
 
       - name: Install vcpkg dependencies (Linux)
         run: |
-          ./vcpkg/bootstrap-vcpkg.sh
+          ./vcpkg/bootstrap-vcpkg.sh  # Ensure this command is correct
           ./vcpkg/vcpkg install --triplet x64-linux
 
       - name: Configure CMake (Linux)
