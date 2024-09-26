@@ -41,15 +41,28 @@ jobs:
         run: choco install cmake ninja -y
 
       # Install CUDA Toolkit via Direct Download
-      - name: Download CUDA Toolkit Installer
+      - name: Download CUDA Toolkit Installer (Windows)
         shell: pwsh
         run: |
-          $cuda_version = "11.8.0"
-          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_windows.exe"
-          Write-Output "Downloading CUDA Toolkit from $cuda_url"
+          $cuda_version = "12.6.0"
+          $cuda_build = "560.76"
+          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/${cuda_version}/local_installers/cuda_${cuda_version}_${cuda_build}_windows.exe"
+          Write-Output "Attempting to download CUDA Toolkit from $cuda_url"
+
+          # Check if the URL is accessible
+          try {
+            $response = Invoke-WebRequest -Uri $cuda_url -Method Head -UseBasicParsing -ErrorAction Stop
+            Write-Output "URL exists. Proceeding with download."
+          }
+          catch {
+            Write-Error "CUDA Toolkit installer not found at $cuda_url. Please verify the URL."
+            exit 1
+          }
+
+          # Download the installer
           Invoke-WebRequest -Uri $cuda_url -OutFile "cuda_installer.exe" -UseBasicParsing
 
-      - name: Install CUDA Toolkit
+      - name: Install CUDA Toolkit (Windows)
         shell: pwsh
         run: |
           Start-Process -FilePath "cuda_installer.exe" -ArgumentList "/S" -Wait
@@ -68,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $LIBTORCH_VERSION = "2.3.1"    # Update to the required version
-          $CUDA_VERSION = "cu118"        # Ensure this matches the installed CUDA version
+          $CUDA_VERSION = "cu126"        # Ensure this matches the installed CUDA version
           $LIBTORCH_URL = "https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
           Write-Output "Downloading libtorch from $LIBTORCH_URL"
           curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { Write-Error "Failed to download libtorch"; exit 1 }
@@ -93,7 +106,7 @@ jobs:
       - name: Set up CUDA Environment Variable
         shell: pwsh
         run: |
-          $env:CUDA_TOOLKIT_ROOT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8"
+          $env:CUDA_TOOLKIT_ROOT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
           Add-Content -Path $env:GITHUB_ENV -Value "CUDA_TOOLKIT_ROOT_DIR=$env:CUDA_TOOLKIT_ROOT_DIR"
 
       # Configure CMake (Windows)
@@ -168,7 +181,7 @@ jobs:
       - name: Download and Extract Torch (Linux)
         run: |
           LIBTORCH_VERSION="2.3.1"    # Update to the required version
-          CUDA_VERSION="cu118"        # Ensure this matches the installed CUDA version
+          CUDA_VERSION="cu126"        # Ensure this matches the installed CUDA version
           LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
           echo "Downloading libtorch from $LIBTORCH_URL"
           curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
@@ -185,9 +198,9 @@ jobs:
           echo "Downloading TensorRT from $TENSORRT_URL"
           curl -f -L -o tensorrt.tar.gz "$TENSORRT_URL" || { echo "Failed to download TensorRT"; exit 1; }
           file tensorrt.tar.gz
-          tar -xf tensorrt.tar.gz -C /usr/local/
-          mv /usr/local/TensorRT-${TENSORRT_VERSION} $GITHUB_WORKSPACE/tensorrt
-          rm tensorrt.tar.gz
+          sudo tar -xf tensorrt.tar.gz -C /usr/local/ || { echo "Failed to extract TensorRT"; exit 1; }
+          sudo mv /usr/local/TensorRT-${TENSORRT_VERSION} $GITHUB_WORKSPACE/tensorrt || { echo "Failed to move TensorRT directory"; exit 1; }
+          sudo rm tensorrt.tar.gz
 
       # Install nv-codec-headers (Linux)
       - name: Install nv-codec-headers (Linux)
