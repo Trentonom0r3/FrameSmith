@@ -29,39 +29,45 @@ jobs:
         run: |
           choco install -y cmake ninja
 
-      # Install CUDA Toolkit
+      # Install CUDA Toolkit using lukka/get-cuda
       - name: Install CUDA Toolkit
-        uses: danielpalme/Setup-CUDA@v1
+        uses: lukka/get-cuda@v1
         with:
-          cuda-version: 12.1  # Specify the required CUDA version
+          cuda-version: '12.4'  # Specify the required CUDA version
 
       # Download and Extract Torch (Windows)
       - name: Download and Extract Torch (Windows)
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          curl -L -o libtorch.zip "https://download.pytorch.org/libtorch/cu124/libtorch-win-shared-with-deps-2.4.0+cu124.zip"
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0+cu124.zip"
+          echo "Downloading libtorch from $LIBTORCH_URL"
+          curl -f -L -o libtorch.zip "$LIBTORCH_URL"
           powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${env:WORKSPACE}'"
+          rm libtorch.zip
 
       # Download and Extract TensorRT (Windows)
       - name: Download and Extract TensorRT (Windows)
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          curl -L -o tensorrt.zip "https://developer.download.nvidia.com/compute/redist/tensorrt/10.3.0/TensorRT-10.3.0.26.Windows.zip"
+          TENSTRTRT_URL="https://developer.download.nvidia.com/compute/redist/tensorrt/10.3.0/TensorRT-10.3.0.26.Windows.zip"
+          echo "Downloading TensorRT from $TENSTRTRT_URL"
+          curl -f -L -o tensorrt.zip "$TENSTRTRT_URL"
           powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${env:WORKSPACE}'"
+          rm tensorrt.zip
 
       # Set up CUDA Environment Variable (Optional)
       - name: Set up CUDA Environment Variable
         run: |
-          echo "CUDA_TOOLKIT_ROOT_DIR=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" >> $GITHUB_ENV
+          echo "CUDA_TOOLKIT_ROOT_DIR=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4" >> $GITHUB_ENV
 
       - name: Configure CMake (Windows)
         run: |
-          cmake -S FrameSmith -B out/build/x64-release \
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/libtorch;${{ github.workspace }}/TensorRT" \
+          cmake -S FrameSmith -B out/build/x64-release `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/libtorch;${{ github.workspace }}/TensorRT" `
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Windows)
@@ -114,21 +120,30 @@ jobs:
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 13
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 13
 
+      # Download and Extract Torch (Linux)
       - name: Download and Extract Torch (Linux)
         run: |
-          curl -L -o libtorch.tar.gz "https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0+cu124.tar.gz"
-          tar -xzf libtorch.tar.gz -C $GITHUB_WORKSPACE
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.0.1+cu118.zip"
+          echo "Downloading libtorch from $LIBTORCH_URL"
+          curl -f -L -o libtorch.zip "$LIBTORCH_URL"
+          unzip libtorch.zip -d $GITHUB_WORKSPACE
+          rm libtorch.zip
 
+      # Download and Extract TensorRT (Linux)
       - name: Download and Extract TensorRT (Linux)
         run: |
-          curl -L -o tensorrt.tar.gz https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.3.0/tars/TensorRT-10.3.0.26.Linux.x86_64-gnu.cuda-12.5.tar.gz
+          TENSTRTRT_URL="https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.3.0/tars/TensorRT-10.3.0.26.Linux.x86_64-gnu.cuda-12.1.tar.gz"
+          echo "Downloading TensorRT from $TENSTRTRT_URL"
+          curl -f -L -o tensorrt.tar.gz "$TENSTRTRT_URL"
           tar -xf tensorrt.tar.gz -C /usr/local/
           mv /usr/local/TensorRT-10.3.0.26 $GITHUB_WORKSPACE/tensorrt
+          rm tensorrt.tar.gz
 
       - name: Install nv-codec-headers (Linux)
         run: |
           git clone https://github.com/FFmpeg/nv-codec-headers
           cd nv-codec-headers && sudo make -j$(nproc) && sudo make install
+          cd ..
 
       # Install vcpkg dependencies at the end since it works properly
       - name: Install vcpkg dependencies (Linux)
@@ -136,6 +151,7 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.sh
           ./vcpkg/vcpkg install --triplet x64-linux
 
+      # Configure CMake
       - name: Configure CMake (Linux)
         run: |
           cmake -S ${GITHUB_WORKSPACE}/FrameSmith -B ${GITHUB_WORKSPACE}/out/build/x64-release \
@@ -144,18 +160,22 @@ jobs:
             -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/tensorrt" \
             -DCMAKE_BUILD_TYPE=Release
 
+      # Build project
       - name: Build project (Linux)
         run: |
           cmake --build ${GITHUB_WORKSPACE}/out/build/x64-release --config Release
 
+      # Copy dependencies
       - name: Copy dependencies (Linux)
         run: |
           cp ${GITHUB_WORKSPACE}/vcpkg/installed/x64-linux/lib/*.so* ${GITHUB_WORKSPACE}/out/build/x64-release/
 
+      # Create zip archive
       - name: Create zip archive (Linux)
         run: |
           zip -r FrameSmith-Linux.zip ${GITHUB_WORKSPACE}/out/build/x64-release/*
 
+      # Upload build artifacts
       - name: Upload build artifacts (Linux)
         uses: actions/upload-artifact@v3
         with:
