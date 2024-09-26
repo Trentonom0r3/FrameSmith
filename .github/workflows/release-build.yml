@@ -89,6 +89,10 @@ jobs:
       - name: List vcpkg directory contents
         run: ls vcpkg
 
+      # Prepare the vcpkg manifest by copying it to the root directory
+      - name: Prepare vcpkg Manifest (Linux)
+        run: cp ${GITHUB_WORKSPACE}/FrameSmith/vcpkg.json ${GITHUB_WORKSPACE}
+
       - name: Install dependencies
         run: |
           sudo apt-get update
