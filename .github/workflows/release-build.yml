@@ -40,10 +40,20 @@ jobs:
         shell: pwsh
         run: choco install cmake ninja -y
 
-      # Install CUDA Toolkit via Chocolatey
-      - name: Install CUDA Toolkit via Chocolatey
+      # Install CUDA Toolkit via Direct Download
+      - name: Download CUDA Toolkit Installer
         shell: pwsh
-        run: choco install cuda --version=11.8 -y
+        run: |
+          $cuda_version = "11.8.0"
+          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_windows.exe"
+          Write-Output "Downloading CUDA Toolkit from $cuda_url"
+          Invoke-WebRequest -Uri $cuda_url -OutFile "cuda_installer.exe" -UseBasicParsing
+
+      - name: Install CUDA Toolkit
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "cuda_installer.exe" -ArgumentList "/S" -Wait
+          Remove-Item "cuda_installer.exe"
 
       # Verify CUDA Installation
       - name: Verify CUDA Installation
@@ -57,9 +67,9 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         shell: pwsh
         run: |
-          $LIBTORCH_VERSION = "2.4.1"    # Update to the required version
+          $LIBTORCH_VERSION = "2.3.1"    # Update to the required version
           $CUDA_VERSION = "cu118"        # Ensure this matches the installed CUDA version
-          $LIBTORCH_URL = "https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}+${CUDA_VERSION}.zip"
+          $LIBTORCH_URL = "https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
           Write-Output "Downloading libtorch from $LIBTORCH_URL"
           curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { Write-Error "Failed to download libtorch"; exit 1 }
           Expand-Archive -Path 'libtorch.zip' -DestinationPath "$env:WORKSPACE"
@@ -157,11 +167,12 @@ jobs:
       # Download and Extract Torch (Linux)
       - name: Download and Extract Torch (Linux)
         run: |
-          LIBTORCH_VERSION="2.4.1"    # Update to the required version
+          LIBTORCH_VERSION="2.3.1"    # Update to the required version
           CUDA_VERSION="cu118"        # Ensure this matches the installed CUDA version
-          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}+${CUDA_VERSION}.zip"
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
           echo "Downloading libtorch from $LIBTORCH_URL"
           curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
+          file libtorch.zip
           unzip libtorch.zip -d $GITHUB_WORKSPACE
           rm libtorch.zip
 
@@ -173,6 +184,7 @@ jobs:
           TENSORRT_URL="https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.4.0/tars/TensorRT-10.4.0.26.Linux.x86_64-gnu.cuda-12.6.tar.gz"
           echo "Downloading TensorRT from $TENSORRT_URL"
           curl -f -L -o tensorrt.tar.gz "$TENSORRT_URL" || { echo "Failed to download TensorRT"; exit 1; }
+          file tensorrt.tar.gz
           tar -xf tensorrt.tar.gz -C /usr/local/
           mv /usr/local/TensorRT-${TENSORRT_VERSION} $GITHUB_WORKSPACE/tensorrt
           rm tensorrt.tar.gz
