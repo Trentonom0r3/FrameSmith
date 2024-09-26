@@ -9,7 +9,7 @@ public:
 
 	void run(at::Tensor input) override;
 private:
-	torch::Tensor I0, I1, rgb_tensor;
+	torch::Tensor I0, I1;
 	std::vector<at::Tensor> timestep_tensors;
 	bool firstRun;
 	bool useI0AsSource;

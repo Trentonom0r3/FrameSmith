@@ -17,10 +17,10 @@ TRTBase::TRTBase(std::string modelName, int factor, int width, int height, bool 
 
 TRTBase::~TRTBase()
 {
-    CUDA_CHECK(cudaStreamDestroy(inferenceStream));
 	if (writer) {
 		delete writer;
 	}
+	CUDA_CHECK(cudaStreamDestroy(inferenceStream));
 }
 
 void TRTBase::handleModel(std::vector<int> minDims, std::vector<int> optDims, std::vector<int> maxDims)

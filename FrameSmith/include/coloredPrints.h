@@ -30,6 +30,10 @@ inline std::string cyan(const std::string& text) {
     return "\033[36m" + text + "\033[0m";
 }
 
+inline std::string orange(const std::string& text) {
+	return "\033[38;5;208m" + text + "\033[0m";
+}
+
 inline std::string rainbow(const std::string& text) {
     std::vector<std::string> colors = {"\033[31m", "\033[33m", "\033[32m", "\033[34m", "\033[35m", "\033[36m"};
     std::string coloredText;
@@ -40,14 +44,31 @@ inline std::string rainbow(const std::string& text) {
 }
 
 inline std::string gradient(const std::string& text) {
-    std::vector<std::string> colors = {"\033[97m", "\033[91m", "\033[31m"};  // white, light red, red
+    // Blacksmith colors: Charcoal, Dark Grey, Steel Grey, Blue Grey, Gunmetal
+    std::vector<std::string> colors = {
+        "\033[38;5;238m",  // Charcoal
+        "\033[38;5;239m",  // Slightly lighter Charcoal
+        "\033[38;5;240m",  // Dark Grey
+        "\033[38;5;241m",  // Lighter Dark Grey
+        "\033[38;5;244m",  // Steel Grey
+        "\033[38;5;245m",  // Lighter Steel Grey
+        "\033[38;5;62m",   // Blue Grey
+        "\033[38;5;59m"    // Gunmetal
+    };
+
     std::string coloredText;
-    srand(time(nullptr));  // Seed the random number generator
-    for (size_t i = 0; i < text.size(); ++i) {
-        int baseIndex = static_cast<int>((static_cast<float>(i) / text.size()) * (colors.size() - 1));
-        int randomOffset = rand() % 3 - 1;  // Random number between -1 and 1
-        int colorIndex = std::clamp(baseIndex + randomOffset, 0, static_cast<int>(colors.size() - 1));
-        coloredText += colors[colorIndex] + text[i] + "\033[0m";
+    size_t numColors = colors.size();
+    size_t textLength = text.size();
+
+    for (size_t i = 0; i < textLength; ++i) {
+        // Calculate the color index based on the position in the text
+        double ratio = static_cast<double>(i) / (textLength - 1);
+        size_t colorIndex = static_cast<size_t>(ratio * (numColors - 1));
+        colorIndex = (std::min)(colorIndex, numColors - 1); // Ensure index is within bounds
+        coloredText += colors[colorIndex] + std::string(1, text[i]) + "\033[0m";
     }
+
     return coloredText;
 }
+
+

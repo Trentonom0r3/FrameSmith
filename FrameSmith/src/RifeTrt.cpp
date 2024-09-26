@@ -55,9 +55,7 @@ void RifeTrt::run(at::Tensor input)
 		// Synchronize to ensure inference is complete
 		cudaStreamSynchronize(inferenceStream);
 
-		// Update the source for the next interpolation step
-		rgb_tensor = dummyOutput;
-		addToWriter(writer, rgb_tensor, half, benchmarkMode);
+		addToWriter(writer, dummyOutput, half, benchmarkMode);
 	}
 	// Flip the source flag for the next run
 	useI0AsSource = !useI0AsSource;

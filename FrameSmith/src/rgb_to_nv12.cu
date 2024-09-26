@@ -13,8 +13,8 @@
 
 extern "C" {
 
-#define BLOCK_WIDTH 32
-#define BLOCK_HEIGHT 32
+#define BLOCK_WIDTH 16
+#define BLOCK_HEIGHT 16
 
 	// Optimized FP32 Kernel for RGB to NV12 conversion in channels-first format
 	__global__ void rgb_to_nv12_fp32_optimized(const float* __restrict__ rgb, uint8_t* __restrict__ y_plane, uint8_t* __restrict__ uv_plane,

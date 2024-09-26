@@ -23,8 +23,8 @@ UpscaleTrt::~UpscaleTrt()
 
 void UpscaleTrt::run(at::Tensor input)
 {
-	dummyInput.copy_(input);
+	dummyInput.copy_(input, true);
 	context->enqueueV3(inferenceStream);
-	//cudaStreamSynchronize(inferenceStream);
-	addToWriter(writer, dummyOutput._lazy_clone(), half, benchmarkMode);
+	cudaStreamSynchronize(inferenceStream);
+	addToWriter(writer, dummyOutput, half, benchmarkMode);
 }
