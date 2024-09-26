@@ -31,14 +31,18 @@ jobs:
           vcpkg\vcpkg.exe install
 
       - name: Download and Extract Torch (Windows)
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
           curl -L -o libtorch.zip https://download.pytorch.org/libtorch/cu121/libtorch-win-shared-with-deps-2.0.0.zip
-          powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${GITHUB_WORKSPACE}'"
+          powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${env:WORKSPACE}'"
 
       - name: Download and Extract TensorRT (Windows)
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
           curl -L -o tensorrt.zip https://developer.download.nvidia.com/compute/redist/tensorrt/10.x/TensorRT-10.x.x.x.Windows.zip
-          powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${GITHUB_WORKSPACE}'"
+          powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${env:WORKSPACE}'"
 
       - name: Set up CUDA
         run: |
@@ -96,7 +100,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+          sudo apt-get install -y cmake ninja-build nasm  # Added nasm installation
 
       - name: Install vcpkg dependencies (Linux)
         run: |
