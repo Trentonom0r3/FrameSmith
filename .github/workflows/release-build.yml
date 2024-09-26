@@ -49,24 +49,6 @@ jobs:
         shell: pwsh
         run: choco install cmake ninja -y
 
-      # Cache vcpkg
-      - name: Cache vcpkg
-        uses: actions/cache@v3
-        with:
-          path: ./vcpkg
-          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-
-
-      # Cache libtorch.zip
-      - name: Cache libtorch.zip
-        uses: actions/cache@v3
-        with:
-          path: libtorch.zip
-          key: ${{ runner.os }}-libtorch-${{ env.LIBTORCH_VERSION }}-${{ env.LIBTORCH_CUDA_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-libtorch-${{ env.LIBTORCH_VERSION }}-
-
       # Download CUDA Toolkit Installer (Windows)
       - name: Download CUDA Toolkit Installer (Windows)
         shell: pwsh
@@ -106,16 +88,11 @@ jobs:
       - name: Download and Extract libtorch (Windows)
         shell: pwsh
         run: |
-          if (Test-Path "libtorch.zip") {
-            Write-Output "libtorch.zip found in cache. Skipping download."
-          }
-          else {
-            $libtorch_url = "https://download.pytorch.org/libtorch/${{ env.LIBTORCH_CUDA_VERSION }}/libtorch-win-shared-with-deps-${{ env.LIBTORCH_VERSION }}%2B${{ env.LIBTORCH_CUDA_VERSION }}.zip"
-            Write-Output "Downloading libtorch from $libtorch_url"
-            curl -f -L -o libtorch.zip "$libtorch_url" || { Write-Error "Failed to download libtorch"; exit 1 }
-          }
+          $libtorch_url = "https://download.pytorch.org/libtorch/${{ env.LIBTORCH_CUDA_VERSION }}/libtorch-win-shared-with-deps-${{ env.LIBTORCH_VERSION }}+${{ env.LIBTORCH_CUDA_VERSION }}.zip"
+          Write-Output "Downloading libtorch from $libtorch_url"
+          curl -f -L -o libtorch.zip "$libtorch_url" || { Write-Error "Failed to download libtorch"; exit 1 }
           Expand-Archive -Path 'libtorch.zip' -DestinationPath "${env:GITHUB_WORKSPACE}"
-          # Do not remove libtorch.zip to utilize caching
+          Remove-Item 'libtorch.zip'
 
       # Download and Extract TensorRT (Windows)
       - name: Download and Extract TensorRT (Windows)
@@ -204,53 +181,30 @@ jobs:
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 13
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 13
 
-      # Cache vcpkg
-      - name: Cache vcpkg
-        uses: actions/cache@v3
-        with:
-          path: ./vcpkg
-          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-
-
-      # Cache libtorch.zip
-      - name: Cache libtorch.zip
-        uses: actions/cache@v3
-        with:
-          path: libtorch.zip
-          key: ${{ runner.os }}-libtorch-${{ env.LIBTORCH_VERSION }}-${{ env.LIBTORCH_CUDA_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-libtorch-${{ env.LIBTORCH_VERSION }}-
-
       # Download and Extract libtorch (Linux)
       - name: Download and Extract libtorch (Linux)
         run: |
-          if [ -f "libtorch.zip" ]; then
-            echo "libtorch.zip found in cache. Skipping download."
-          else
-            LIBTORCH_VERSION="${{ env.LIBTORCH_VERSION }}"
-            CUDA_VERSION="${{ env.LIBTORCH_CUDA_VERSION }}"
-            LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${CUDA_VERSION}.zip"
-            echo "Downloading libtorch from $LIBTORCH_URL"
-            curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
-            # Save to cache
-          fi
+          LIBTORCH_VERSION="${{ env.LIBTORCH_VERSION }}"
+          CUDA_VERSION="${{ env.LIBTORCH_CUDA_VERSION }}"
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}+${CUDA_VERSION}.zip"
+          echo "Downloading libtorch from $LIBTORCH_URL"
+          curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
           file libtorch.zip
           unzip libtorch.zip -d $GITHUB_WORKSPACE || { echo "Failed to unzip libtorch"; exit 1; }
-          # Do not remove libtorch.zip to utilize caching
+          rm libtorch.zip
 
       # Download and Install TensorRT (Linux)
       - name: Download and Install TensorRT (Linux)
         run: |
           TENSORRT_VERSION="${{ env.TENSORRT_VERSION }}"
           CUDA_VERSION="${{ env.CUDA_VERSION_LINUX }}"
-          TENSORRT_URL="https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/${TENSORRT_VERSION}/local_repo/nv-tensorrt-local-repo-ubuntu2004-${TENSORRT_VERSION}-cuda-${CUDA_VERSION}_1.0-1_amd64.deb"
+          TENSORRT_URL="https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.4.0/local_repo/nv-tensorrt-local-repo-ubuntu2004-10.4.0-cuda-12.6_1.0-1_amd64.deb"
           echo "Downloading TensorRT from $TENSORRT_URL"
           curl -f -L -o tensorrt.deb "$TENSORRT_URL" || { echo "Failed to download TensorRT"; exit 1; }
           sudo dpkg -i tensorrt.deb || { echo "Failed to install TensorRT .deb package"; exit 1; }
 
           # Copy the GPG key to the keyrings directory
-          sudo cp /var/nv-tensorrt-local-repo-ubuntu2004-${TENSORRT_VERSION}-cuda-${CUDA_VERSION}/nv-tensorrt-local-A88B7455-keyring.gpg /usr/share/keyrings/
+          sudo cp /var/nv-tensorrt-local-repo-ubuntu2004-10.4.0-cuda-12.6/nv-tensorrt-local-A88B7455-keyring.gpg /usr/share/keyrings/
 
           # Update apt repositories
           sudo apt-get update || { echo "apt-get update failed"; exit 1; }
