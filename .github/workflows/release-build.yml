@@ -54,7 +54,7 @@ jobs:
 
       - name: Configure CMake (Windows)
         run: |
-          cmake -S ${GITHUB_WORKSPACE} -B ${GITHUB_WORKSPACE}/out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/TensorRT" -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/libtorch;$env:GITHUB_WORKSPACE/TensorRT" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Windows)
         run: |
@@ -110,7 +110,9 @@ jobs:
       - name: Download and Extract Torch (Linux)
         run: |
           curl -L -o libtorch.tar.gz https://download.pytorch.org/libtorch/cu121/libtorch-shared-with-deps-2.0.0.tar.gz
-          tar -xzf libtorch.tar.gz -C ${GITHUB_WORKSPACE}
+          file libtorch.tar.gz  # Debugging step to check file type
+          tar -xzf libtorch.tar.gz -C $GITHUB_WORKSPACE
+
 
       - name: Download and Extract TensorRT (Linux)
         run: |
