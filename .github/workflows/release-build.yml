@@ -24,24 +24,18 @@ jobs:
       - name: List vcpkg directory contents
         run: dir vcpkg
 
-      - name: Install vcpkg dependencies (Windows)
-        shell: cmd
-        run: |
-          vcpkg\bootstrap-vcpkg.bat
-          vcpkg\vcpkg.exe install
-
       - name: Download and Extract Torch (Windows)
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          curl -L -o libtorch.zip https://download.pytorch.org/libtorch/cu121/libtorch-win-shared-with-deps-2.0.0.zip
+          curl -L -o libtorch.zip https://download.pytorch.org/libtorch/cu124/libtorch-win-shared-with-deps-2.4.0.zip
           powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${env:WORKSPACE}'"
 
       - name: Download and Extract TensorRT (Windows)
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          curl -L -o tensorrt.zip https://developer.download.nvidia.com/compute/redist/tensorrt/10.x/TensorRT-10.x.x.x.Windows.zip
+          curl -L -o tensorrt.zip https://developer.download.nvidia.com/compute/redist/tensorrt/10.3.0/TensorRT-10.3.0.26.Windows.zip
           powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${env:WORKSPACE}'"
 
       - name: Set up CUDA
@@ -54,7 +48,7 @@ jobs:
 
       - name: Configure CMake (Windows)
         run: |
-          cmake -S FrameSmith -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/libtorch;$env:GITHUB_WORKSPACE/TensorRT" -DCMAKE_BUILD_TYPE=Release
+          cmake -S FrameSmith -B out/build/x64-release -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_PREFIX_PATH="${{ github.workspace }}/libtorch;${{ github.workspace }}/TensorRT" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Windows)
         run: |
@@ -93,35 +87,44 @@ jobs:
       - name: List vcpkg directory contents
         run: ls vcpkg
 
-      # Prepare the vcpkg manifest by copying it to the root directory
-      - name: Prepare vcpkg Manifest (Linux)
-        run: cp ${GITHUB_WORKSPACE}/FrameSmith/vcpkg.json ${GITHUB_WORKSPACE}
-
-      - name: Install dependencies
+      # Install dependencies and prepare environment
+      - name: Install essential tools (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build nasm  # Added nasm installation
+          sudo apt-get install -y cmake ninja-build nasm pkg-config build-essential manpages-dev software-properties-common
 
+      - name: Install GCC 13 (Linux)
+        run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt-get update && sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 13
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 13
+
+      - name: Download and Extract Torch (Linux)
+        run: |
+          curl -L -o libtorch.tar.gz https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0%2Bcu124.tar.gz
+          tar -xzf libtorch.tar.gz -C $GITHUB_WORKSPACE
+
+      - name: Download and Extract TensorRT (Linux)
+        run: |
+          curl -L -o tensorrt.tar.gz https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.3.0/tars/TensorRT-10.3.0.26.Linux.x86_64-gnu.cuda-12.5.tar.gz
+          tar -xf tensorrt.tar.gz -C /usr/local/
+          mv /usr/local/TensorRT-10.3.0.26 $GITHUB_WORKSPACE/tensorrt
+
+      - name: Install nv-codec-headers (Linux)
+        run: |
+          git clone https://github.com/FFmpeg/nv-codec-headers
+          cd nv-codec-headers && sudo make -j$(nproc) && sudo make install
+
+      # Install vcpkg dependencies at the end since it works properly
       - name: Install vcpkg dependencies (Linux)
         run: |
           ./vcpkg/bootstrap-vcpkg.sh
           ./vcpkg/vcpkg install --triplet x64-linux
 
-      - name: Download and Extract Torch (Linux)
-        run: |
-          curl -L -o libtorch.tar.gz https://download.pytorch.org/libtorch/cu121/libtorch-shared-with-deps-2.0.0.tar.gz
-          file libtorch.tar.gz  # Debugging step to check file type
-          tar -xzf libtorch.tar.gz -C $GITHUB_WORKSPACE
-
-
-      - name: Download and Extract TensorRT (Linux)
-        run: |
-          curl -L -o tensorrt.tar.gz https://developer.download.nvidia.com/compute/redist/tensorrt/10.x/TensorRT-10.x.x.x.Ubuntu-20.04.tar.gz
-          tar -xzf tensorrt.tar.gz -C ${GITHUB_WORKSPACE}
-
       - name: Configure CMake (Linux)
         run: |
-          cmake -S ${GITHUB_WORKSPACE}/FrameSmith -B ${GITHUB_WORKSPACE}/out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/TensorRT" -DCMAKE_BUILD_TYPE=Release
+          cmake -S ${GITHUB_WORKSPACE}/FrameSmith -B ${GITHUB_WORKSPACE}/out/build/x64-release -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/libtorch;${GITHUB_WORKSPACE}/tensorrt" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project (Linux)
         run: |
