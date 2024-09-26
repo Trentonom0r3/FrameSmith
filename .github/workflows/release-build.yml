@@ -17,6 +17,14 @@ jobs:
       - name: Initialize submodules
         run: git submodule update --init --recursive
 
+      # Debug step: List directory contents to verify the presence of vcpkg
+      - name: List directory contents
+        run: dir
+
+      # Debug step: List contents of vcpkg directory
+      - name: List vcpkg directory contents
+        run: dir vcpkg
+
       - name: Install vcpkg dependencies (Windows)
         shell: cmd  # Use cmd shell to run .bat files
         run: |
@@ -65,10 +73,13 @@ jobs:
       - name: Initialize submodules
         run: git submodule update --init --recursive
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+      # Debug step: List directory contents to verify the presence of vcpkg
+      - name: List directory contents
+        run: ls
+
+      # Debug step: List contents of vcpkg directory
+      - name: List vcpkg directory contents
+        run: ls vcpkg
 
       - name: Install vcpkg dependencies (Linux)
         run: |
