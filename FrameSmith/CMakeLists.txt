@@ -17,20 +17,55 @@ endif()
 
 # Enable verbose output for troubleshooting
 set(CMAKE_VERBOSE_MAKEFILE ON)
-
 if(WIN32)
-    set(CMAKE_TOOLCHAIN_FILE "C:/Users/tjerf/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
-    set(Protobuf_PROTOC_EXECUTABLE "C:/Users/tjerf/vcpkg/installed/x64-windows/tools/protobuf/protoc.exe")
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+        message(FATAL_ERROR "CMAKE_TOOLCHAIN_FILE is not defined. Please specify it as a CMake option or environment variable.")
+    endif()
 
-    set(Torch_DIR "C:/Users/tjerf/Downloads/libtorch-win-shared-with-deps-2.4.0+cu121/libtorch/share/cmake/Torch" CACHE PATH "Path to Torch directory")
-    set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.1" CACHE PATH "Path to CUDA Toolkit directory")
-    set(TENSORRT_DIR "C:/Users/tjerf/Downloads/TensorRT-10.3.0.26.Windows.win10.cuda-12.5/TensorRT-10.3.0.26" CACHE PATH "Path to TensorRT directory")
-    set(VCPKG_DIR "C:/Users/tjerf/vcpkg/installed/x64-windows" CACHE PATH "Path to VCPKG_DIR installation directory")
+    if(NOT DEFINED Protobuf_PROTOC_EXECUTABLE)
+        find_program(Protobuf_PROTOC_EXECUTABLE protoc)
+        if(NOT Protobuf_PROTOC_EXECUTABLE)
+            message(FATAL_ERROR "Protobuf_PROTOC_EXECUTABLE is not found. Please ensure Protobuf is installed or provide the path as an option.")
+        endif()
+    endif()
+
+    # Torch
+    if(NOT DEFINED Torch_DIR)
+        find_path(Torch_DIR TorchConfig.cmake HINTS ENV TORCH_DIR PATHS "$ENV{TORCH_DIR}")
+        if(NOT Torch_DIR)
+            message(FATAL_ERROR "Torch_DIR is not defined and could not be found. Please set it via environment variable or CMake option.")
+        endif()
+    endif()
+
+    # CUDA Toolkit
+    if(NOT DEFINED CUDA_TOOLKIT_ROOT_DIR)
+        find_package(CUDA REQUIRED)
+        if(NOT CUDA_TOOLKIT_ROOT_DIR)
+            message(FATAL_ERROR "CUDA_TOOLKIT_ROOT_DIR is not defined. Please set it via environment variable or CMake option.")
+        endif()
+    endif()
+
+    # TensorRT
+    if(NOT DEFINED TENSORRT_DIR)
+        find_path(TENSORRT_DIR nvinfer HINTS ENV TENSORRT_DIR PATHS "$ENV{TENSORRT_DIR}")
+        if(NOT TENSORRT_DIR)
+            message(FATAL_ERROR "TENSORRT_DIR is not defined and could not be found. Please set it via environment variable or CMake option.")
+        endif()
+    endif()
+
+    # Vcpkg
+    if(NOT DEFINED VCPKG_DIR)
+        find_path(VCPKG_DIR HINTS ENV VCPKG_DIR PATHS "$ENV{VCPKG_DIR}")
+        if(NOT VCPKG_DIR)
+            message(FATAL_ERROR "VCPKG_DIR is not defined and could not be found. Please set it via environment variable or CMake option.")
+        endif()
+    endif()
 
     # Add vcpkg and other paths
     list(APPEND CMAKE_MODULE_PATH "${VCPKG_DIR}/share/ffmpeg" "${VCPKG_DIR}/share/protobuf")
     set(CMAKE_PREFIX_PATH "${Torch_DIR};${TENSORRT_DIR};${VCPKG_DIR}")
 endif()
+
 
 # Platform-specific options
 if(WIN32)
@@ -68,17 +103,31 @@ elseif(UNIX)
     target_link_libraries(FrameSmith ${CURL_LIBRARIES})
 endif()
 
-include_directories(${FFMPEG_DIR}/include)
-link_directories(${FFMPEG_DIR}/lib)
+if(NOT DEFINED FFMPEG_INCLUDE_DIR)
+    find_path(FFMPEG_INCLUDE_DIR HINTS ENV FFMPEG_INCLUDE_DIR PATHS "$ENV{FFMPEG_INCLUDE_DIR}")
+    if(NOT FFMPEG_INCLUDE_DIR)
+        message(FATAL_ERROR "FFMPEG_INCLUDE_DIR is not defined. Please set it via environment variable or CMake option.")
+    endif()
+endif()
 
-find_library(AVCODEC_LIBRARY avcodec HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
-find_library(AVFORMAT_LIBRARY avformat HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
-find_library(AVUTIL_LIBRARY avutil HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
-find_library(SWSCALE_LIBRARY swscale HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
-find_library(SWRESAMPLE_LIBRARY swresample HINTS "C:/Users/tjerf/vcpkg/installed/x64-windows/lib")
+include_directories(${FFMPEG_INCLUDE_DIR})
+
+if(NOT DEFINED FFMPEG_LIB_DIR)
+    find_path(FFMPEG_LIB_DIR HINTS ENV FFMPEG_LIB_DIR PATHS "$ENV{FFMPEG_LIB_DIR}")
+    if(NOT FFMPEG_LIB_DIR)
+        message(FATAL_ERROR "FFMPEG_LIB_DIR is not defined. Please set it via environment variable or CMake option.")
+    endif()
+endif()
+
+find_library(AVCODEC_LIBRARY avcodec HINTS "${FFMPEG_LIB_DIR}")
+find_library(AVFORMAT_LIBRARY avformat HINTS "${FFMPEG_LIB_DIR}")
+find_library(AVUTIL_LIBRARY avutil HINTS "${FFMPEG_LIB_DIR}")
+find_library(SWSCALE_LIBRARY swscale HINTS "${FFMPEG_LIB_DIR}")
+find_library(SWRESAMPLE_LIBRARY swresample HINTS "${FFMPEG_LIB_DIR}")
+
 
 # Include directories
-include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ concurrentqueue/ ${TENSORRT_DIR}/include ${VCPKG_DIR}/include ${OpenCV_INCLUDE_DIRS})
+include_directories(${CUDA_INCLUDE_DIRS} ${Torch_INCLUDE_DIRS} include/ src/ ${TENSORRT_DIR}/include ${VCPKG_DIR}/include ${OpenCV_INCLUDE_DIRS})
 
 # Link libraries
 if(WIN32)

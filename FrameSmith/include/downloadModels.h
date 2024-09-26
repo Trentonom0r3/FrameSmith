@@ -188,7 +188,7 @@ inline std::string getWeightsDir() {
 #ifdef _WIN32
     char* appdata = getenv("APPDATA");
     if (appdata) {
-        std::string mainPath = std::string(appdata) + "\\RifeCpp";
+        std::string mainPath = std::string(appdata) + "\\FrameSmith";
         weightsDir = mainPath + "\\weights";
         fs::create_directories(weightsDir);
     }
@@ -198,10 +198,10 @@ inline std::string getWeightsDir() {
 #else
     char* xdgConfigHome = getenv("XDG_CONFIG_HOME");
     if (xdgConfigHome) {
-        weightsDir = std::string(xdgConfigHome) + "/RifeCpp/weights";
+        weightsDir = std::string(xdgConfigHome) + "/FrameSmith/weights";
     }
     else {
-        weightsDir = std::string(getenv("HOME")) + "/.config/RifeCpp/weights";
+        weightsDir = std::string(getenv("HOME")) + "/.config/FrameSmith/weights";
     }
     fs::create_directories(weightsDir);
 #endif
