@@ -24,25 +24,42 @@ jobs:
       - name: List vcpkg directory contents
         run: dir vcpkg
 
-      # Install dependencies
-      - name: Install dependencies
+      # Install Chocolatey
+      - name: Install Chocolatey
         run: |
-          choco install -y cmake ninja
+          Set-ExecutionPolicy Bypass -Scope Process -Force;
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072;
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
 
-      # Install CUDA Toolkit using lukka/get-cuda
-      - name: Install CUDA Toolkit
-        uses: lukka/get-cuda@v1
-        with:
-          cuda-version: '12.4'  # Specify the required CUDA version
+      # Install dependencies via Chocolatey
+      - name: Install dependencies via Chocolatey
+        run: choco install cmake ninja -y
+
+      # Install CUDA Toolkit via Chocolatey
+      - name: Install CUDA Toolkit via Chocolatey
+        run: choco install cuda -y
+
+      # Alternatively, use direct download if specific version is needed
+      # - name: Download CUDA Toolkit Installer
+      #   run: |
+      #     $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.4.0/local_installers/cuda_12.4.0_windows.exe"
+      #     Invoke-WebRequest -Uri $cuda_url -OutFile "cuda_installer.exe"
+
+      # - name: Install CUDA Toolkit
+      #   run: |
+      #     Start-Process -FilePath "cuda_installer.exe" -ArgumentList "/S" -Wait
+      #     Remove-Item "cuda_installer.exe"
 
       # Download and Extract Torch (Windows)
       - name: Download and Extract Torch (Windows)
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          LIBTORCH_URL="https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0+cu124.zip"
+          LIBTORCH_VERSION="2.4.0"    # Update to the required version
+          CUDA_VERSION="cu124"        # Update to match your CUDA toolkit version
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}+${CUDA_VERSION}.zip"
           echo "Downloading libtorch from $LIBTORCH_URL"
-          curl -f -L -o libtorch.zip "$LIBTORCH_URL"
+          curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
           powershell -Command "Expand-Archive -Path 'libtorch.zip' -DestinationPath '${env:WORKSPACE}'"
           rm libtorch.zip
 
@@ -51,9 +68,11 @@ jobs:
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          TENSTRTRT_URL="https://developer.download.nvidia.com/compute/redist/tensorrt/10.3.0/TensorRT-10.3.0.26.Windows.zip"
-          echo "Downloading TensorRT from $TENSTRTRT_URL"
-          curl -f -L -o tensorrt.zip "$TENSTRTRT_URL"
+          TENSORRT_VERSION="10.3.0.26"    # Update to the required version
+          CUDA_VERSION="12.4"             # Must match the installed CUDA toolkit
+          TENSORRT_URL="https://developer.download.nvidia.com/compute/redist/tensorrt/${TENSORRT_VERSION}/tars/TensorRT-${TENSORRT_VERSION}.Windows.zip"
+          echo "Downloading TensorRT from $TENSORRT_URL"
+          curl -f -L -o tensorrt.zip "$TENSORRT_URL" || { echo "Failed to download TensorRT"; exit 1; }
           powershell -Command "Expand-Archive -Path 'tensorrt.zip' -DestinationPath '${env:WORKSPACE}'"
           rm tensorrt.zip
 
@@ -111,7 +130,7 @@ jobs:
       - name: Install essential tools (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build nasm pkg-config build-essential manpages-dev software-properties-common
+          sudo apt-get install -y cmake ninja-build nasm pkg-config build-essential manpages-dev software-properties-common unzip
 
       - name: Install GCC 13 (Linux)
         run: |
@@ -123,27 +142,34 @@ jobs:
       # Download and Extract Torch (Linux)
       - name: Download and Extract Torch (Linux)
         run: |
-          LIBTORCH_URL="https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.0.1+cu118.zip"
+          LIBTORCH_VERSION="2.4.0"    # Update to the required version
+          CUDA_VERSION="cu124"        # Update to match your CUDA toolkit version
+          LIBTORCH_URL="https://download.pytorch.org/libtorch/${CUDA_VERSION}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}+${CUDA_VERSION}.zip"
           echo "Downloading libtorch from $LIBTORCH_URL"
-          curl -f -L -o libtorch.zip "$LIBTORCH_URL"
+          curl -f -L -o libtorch.zip "$LIBTORCH_URL" || { echo "Failed to download libtorch"; exit 1; }
           unzip libtorch.zip -d $GITHUB_WORKSPACE
           rm libtorch.zip
 
       # Download and Extract TensorRT (Linux)
       - name: Download and Extract TensorRT (Linux)
         run: |
-          TENSTRTRT_URL="https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.3.0/tars/TensorRT-10.3.0.26.Linux.x86_64-gnu.cuda-12.1.tar.gz"
-          echo "Downloading TensorRT from $TENSTRTRT_URL"
-          curl -f -L -o tensorrt.tar.gz "$TENSTRTRT_URL"
+          TENSORRT_VERSION="10.3.0.26"    # Update to the required version
+          CUDA_VERSION="12.4"             # Must match the installed CUDA toolkit
+          TENSORRT_URL="https://developer.download.nvidia.com/compute/machine-learning/tensorrt/${TENSORRT_VERSION}/tars/TensorRT-${TENSORRT_VERSION}.Linux.x86_64-gnu.cuda-${CUDA_VERSION}.tar.gz"
+          echo "Downloading TensorRT from $TENSORRT_URL"
+          curl -f -L -o tensorrt.tar.gz "$TENSORRT_URL" || { echo "Failed to download TensorRT"; exit 1; }
           tar -xf tensorrt.tar.gz -C /usr/local/
-          mv /usr/local/TensorRT-10.3.0.26 $GITHUB_WORKSPACE/tensorrt
+          mv /usr/local/TensorRT-${TENSORRT_VERSION} $GITHUB_WORKSPACE/tensorrt
           rm tensorrt.tar.gz
 
+      # Install nv-codec-headers (Linux)
       - name: Install nv-codec-headers (Linux)
         run: |
           git clone https://github.com/FFmpeg/nv-codec-headers
-          cd nv-codec-headers && sudo make -j$(nproc) && sudo make install
+          cd nv-codec-headers
+          sudo make -j$(nproc) && sudo make install
           cd ..
+          rm -rf nv-codec-headers
 
       # Install vcpkg dependencies at the end since it works properly
       - name: Install vcpkg dependencies (Linux)
